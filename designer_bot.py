@@ -9,7 +9,7 @@ from telegram.ext import (
 
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-DESIGNER_USERNAME = "@artesignus"
+DESIGNER_CHAT_ID: int = int(os.getenv("DESIGNER_CHAT_ID", "0"))
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -184,6 +184,13 @@ CATEGORY_NAMES = {
     "branding": "Брендинг"
 }
 
+async def register(update: Update, context) -> None:
+    user_id = update.effective_user.id
+    await update.message.reply_text(
+        f"✅ Твой chat_id: {user_id}\n\nДобавь в Railway Variables:\nDESIGNER_CHAT_ID = {user_id}"
+    )
+
+
 
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
@@ -320,11 +327,19 @@ async def handle_message(update: Update, context) -> None:
 
             contact = f"@{username}" if username else user_name
             category_name = CATEGORY_NAMES.get(category, "Проект")
-            brief_message = f"📋 Новый бриф\n\n👤 Клиент: {contact}\n🗂 Категория: {category_name}\n\n{brief_part}"
+            brief_message = (
+                f"🔔 Новая заявка!\n\n"
+                f"👤 Клиент: {contact}\n"
+                f"🗂 Тип: {category_name}\n\n"
+                f"──────────────────\n\n"
+                f"{brief_part}\n\n"
+                f"──────────────────\n"
+                f"💬 Написать клиенту: tg://user?id={user_id}"
+            )
 
             try:
                 await context.bot.send_message(
-                    chat_id=DESIGNER_USERNAME,
+                    chat_id=DESIGNER_CHAT_ID,
                     text=brief_message
                 )
             except Exception as e:
@@ -348,6 +363,7 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("register", register))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
