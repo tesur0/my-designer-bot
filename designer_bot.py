@@ -4,12 +4,13 @@ import anthropic
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler
+    filters, ContextTypes
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+DESIGNER_USERNAME = "@artesignus"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -17,177 +18,165 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-COLLECTING = 0
+# Хранилище истории диалогов
+CONVERSATIONS: dict[int, list[dict]] = {}
+BRIEF_SENT: dict[int, bool] = {}
 
-SESSION_DATA: dict[int, list[str]] = {}
+SYSTEM_PROMPT = """Ты — AI ассистент премиального digital-дизайнера.
 
-SYSTEM_PROMPT = """Ты — ассистент диджитал дизайнера-фрилансера. 
-Твоя задача — принять хаотичный дамп информации о проекте (текст, голосовые расшифровки, описания скринов) 
-и структурировать его в три чётких блока.
+Твоя задача — общаться с потенциальными клиентами в Telegram и помогать собирать понятный, структурированный бриф ДО того, как дизайнер подключится к диалогу.
 
-Отвечай ТОЛЬКО на русском языке. Формат ответа строго такой:
+ВАЖНО:
+* Общайся естественно и по-человечески.
+* Не разговаривай как корпорация или типичный AI-бот.
+* Сообщения должны быть короткими, уверенными, современными и понятными.
+* Не пиши огромные полотна текста.
+* Не используй кринж AI-фразы.
+* Стиль общения должен ощущаться как premium, calm, smart & efficient.
 
----
-📋 БРИФ
-• Клиент / проект: [название или описание]
-• Задача: [что нужно сделать]
-• Аудитория: [для кого]
-• Референсы / стиль: [если есть]
-• Дедлайн: [если упомянут]
-• Бюджет: [если упомянут]
-• Доп. детали: [всё остальное важное]
+Твои цели:
+1. Понять задачу клиента.
+2. Собрать всю нужную информацию.
+3. Уменьшить хаос в переписке.
+4. Сэкономить время дизайнеру.
+5. Определить качество клиента и возможные риски.
+6. Подготовить структурированную выжимку для дизайнера.
 
----
-📐 ТЗ (техническое задание)
-[Чёткий список задач для дизайнера, пронумерованный. Конкретно: что делать, в каком формате, какие экраны/страницы/элементы]
+Задавай вопросы постепенно, а не все сразу.
 
----
-💰 СМЕТА
-[Примерный список работ с оценкой часов. Формат:
-• Название работы — X–Y часов
-Итого: X–Y часов]
+Информацию, которую нужно собрать:
+* Что именно нужно разработать?
+* Какая ниша/бизнес?
+* Какая главная цель дизайна?
+* Где будет использоваться дизайн?
+* Есть ли референсы?
+* Есть ли фирменные цвета/шрифты/гайдлайн?
+* Готовы ли тексты и материалы?
+* Какие сроки?
+* На какой бюджет ориентируется клиент?
+* Какая целевая аудитория?
+* Какой стиль хочет клиент?
+* Что точно НЕ должно быть в дизайне?
 
----
-❓ ВОПРОСЫ КЛИЕНТУ
-[Список уточняющих вопросов, которые нужно задать перед стартом. Если всё понятно — напиши "Достаточно информации для старта."]
----
+Правила поведения:
+* Если клиент отвечает размыто — задавай уточняющие вопросы.
+* Если клиент не понимает, чего хочет — помогай направлять его.
+* Если клиент токсичный, хаотичный, неуважительный или хочет "срочно, дешево и премиально", internally помечай это как повышенный риск.
+* Не груби клиенту и не спорь.
+* Всегда сохраняй спокойный и профессиональный тон.
 
-Если информации очень мало — заполни что можешь и выдели вопросами всё недостающее."""
+Когда ты решишь что информации достаточно (обычно после 6-10 сообщений), напиши клиенту что передаёшь информацию дизайнеру, и в конце своего сообщения добавь специальный блок (он будет скрыт от клиента):
+
+===BRIEF_START===
+ПРОЕКТ: [название/тип]
+НИША: [бизнес клиента]
+ЦЕЛЬ: [главная цель дизайна]
+ПЛАТФОРМА: [где используется]
+СТИЛЬ: [описание стиля]
+РЕФЕРЕНСЫ: [есть/нет, описание]
+МАТЕРИАЛЫ: [готовы/не готовы]
+СРОК: [дедлайн]
+БЮДЖЕТ: [ориентир клиента]
+АУДИТОРИЯ: [целевая аудитория]
+НЕ НУЖНО: [что не должно быть]
+
+УРОВЕНЬ КЛИЕНТА: low / medium / high
+РИСК: low / medium / high
+БЮДЖЕТ КАТЕГОРИЯ: low-budget / mid-range / premium
+
+ЗАМЕТКИ: [наблюдения о клиенте]
+
+ВЫЖИМКА ДЛЯ ДИЗАЙНЕРА:
+[2-3 предложения самого важного]
+===BRIEF_END===
+
+ВАЖНО:
+Ты НЕ дизайнер.
+Не обещай точную цену.
+Не обещай точные сроки.
+Не принимай финальные бизнес-решения.
+Твоя задача — собрать, структурировать, уточнить и подготовить информацию для дизайнера."""
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
-    SESSION_DATA[user_id] = []
+    CONVERSATIONS[user_id] = []
+    BRIEF_SENT[user_id] = False
     await update.message.reply_text(
-        "👋 Привет! Я твой бот-ассистент.\n\n"
-        "Скидывай всё что есть по проекту — текст, голосовые, описания скринов, ссылки — в любом виде и порядке.\n\n"
-        "Когда закончишь — напиши /generate и я выдам бриф, ТЗ и смету.\n\n"
-        "Начинай! 👇"
+        "Привет! 👋\n\nЯ помогу собрать информацию о вашем проекте до того, как вы пообщаетесь с дизайнером.\n\nРасскажите — над чем хотите поработать?"
     )
-    return COLLECTING
 
 
-async def collect_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_message(update: Update, context) -> None:
     user_id = update.effective_user.id
-    if user_id not in SESSION_DATA:
-        SESSION_DATA[user_id] = []
+    user_name = update.effective_user.first_name or "Клиент"
+    user_text = update.message.text
 
-    # Handle voice messages
-    if update.message.voice:
-        await update.message.reply_text("🎤 Голосовые пока не поддерживаются автоматически — перепиши текстом или скинь расшифровку.")
-        return COLLECTING
+    if not user_text:
+        await update.message.reply_text("Пожалуйста, напишите текстом — голосовые и файлы пока не поддерживаются.")
+        return
 
-    # Handle photos
-    if update.message.photo:
-        caption = update.message.caption or ""
-        SESSION_DATA[user_id].append(f"[Скрин/изображение]{': ' + caption if caption else ''}")
-        await update.message.reply_text("🖼 Скрин сохранён. Продолжай!")
-        return COLLECTING
+    if user_id not in CONVERSATIONS:
+        CONVERSATIONS[user_id] = []
+        BRIEF_SENT[user_id] = False
 
-    # Handle text
-    if update.message.text and not update.message.text.startswith("/"):
-        SESSION_DATA[user_id].append(update.message.text)
-        count = len(SESSION_DATA[user_id])
-        if count == 1:
-            await update.message.reply_text("✅ Принято! Скидывай ещё или /generate чтобы получить документы.")
-        else:
-            await update.message.reply_text(f"✅ Добавлено ({count} блоков). Ещё или /generate?")
-
-    return COLLECTING
-
-
-async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    data = SESSION_DATA.get(user_id, [])
-
-    if not data:
-        await update.message.reply_text("❌ Ты ещё ничего не скинул! Сначала опиши проект.")
-        return COLLECTING
-
-    await update.message.reply_text("⏳ Генерирую бриф, ТЗ и смету...")
-
-    raw_input = "\n\n---\n\n".join(data)
+    # Добавляем сообщение в историю
+    CONVERSATIONS[user_id].append({"role": "user", "content": user_text})
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=2000,
+            max_tokens=1500,
             system=SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": f"Вот информация по проекту:\n\n{raw_input}"}
-            ]
+            messages=CONVERSATIONS[user_id]
         )
-        result = message.content[0].text
+        response = message.content[0].text
 
-        # Split if too long for Telegram (4096 char limit)
-        if len(result) > 4000:
-            parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-            for part in parts:
-                await update.message.reply_text(part)
+        # Проверяем есть ли бриф в ответе
+        if "===BRIEF_START===" in response and not BRIEF_SENT.get(user_id, False):
+            # Разделяем ответ клиенту и бриф
+            parts = response.split("===BRIEF_START===")
+            client_message = parts[0].strip()
+            brief_part = parts[1].split("===BRIEF_END===")[0].strip()
+
+            # Отправляем клиенту только его часть
+            await update.message.reply_text(client_message)
+
+            # Отправляем бриф дизайнеру
+            brief_message = f"📋 *Новый бриф от клиента*\n\n*Клиент:* {user_name}\n\n{brief_part}"
+            try:
+                await context.bot.send_message(
+                    chat_id=DESIGNER_USERNAME,
+                    text=brief_message,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить бриф дизайнеру: {e}")
+
+            BRIEF_SENT[user_id] = True
+            # Сохраняем только клиентскую часть в историю
+            CONVERSATIONS[user_id].append({"role": "assistant", "content": client_message})
         else:
-            await update.message.reply_text(result)
-
-        # Clear session
-        SESSION_DATA[user_id] = []
-        await update.message.reply_text(
-            "✨ Готово! Сессия очищена.\n\nДля нового проекта — /start"
-        )
+            # Обычный ответ
+            await update.message.reply_text(response)
+            CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
 
     except Exception as e:
-        logger.error(f"Anthropic error: {e}")
-        await update.message.reply_text(
-            "❌ Ошибка при генерации. Проверь ANTHROPIC_API_KEY и попробуй снова.\n/start"
-        )
-
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    SESSION_DATA.pop(user_id, None)
-    await update.message.reply_text("❌ Сессия отменена. /start чтобы начать заново.")
-    return ConversationHandler.END
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "📖 Как пользоваться:\n\n"
-        "1. /start — начать новый проект\n"
-        "2. Скидывай всё о проекте в любом виде\n"
-        "3. /generate — получить бриф + ТЗ + смету\n"
-        "4. /cancel — отменить текущую сессию\n\n"
-        "Бот принимает текст и описания скринов."
-    )
+        logger.error(f"Error: {e}")
+        await update.message.reply_text("Что-то пошло не так. Попробуйте ещё раз.")
 
 
 def main():
     if not ANTHROPIC_API_KEY:
         print("❌ ОШИБКА: Установи переменную окружения ANTHROPIC_API_KEY")
-        print("   export ANTHROPIC_API_KEY='sk-ant-...'")
         return
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            COLLECTING: [
-                MessageHandler(filters.ALL & ~filters.COMMAND, collect_message),
-                CommandHandler("generate", generate),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", start),
-        ],
-    )
-
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("generate", generate))
-
-    print("🤖 Бот запущен!")
+    print("🤖 Клиентский бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
