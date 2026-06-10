@@ -58,7 +58,8 @@ BRIEF_SYSTEM = """Ты помогаешь дизайнеру Артёму сфо
 
 def clean_text(text: str) -> str:
     text = text.replace("**", "").replace("__", "")
-    text = re.sub(r'(?<=\w)-(?=\w)', '—', text)
+    # Заменяем длинное тире на обычный дефис между словами
+    text = text.replace(" — ", " - ")
     return text
 
 
