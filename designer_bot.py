@@ -279,7 +279,18 @@ async def ask_design_q(target, user_id, context):
         return
 
     q = qs[step]
-    rows = [[InlineKeyboardButton(o, callback_data=f"dq_{o}") for o in row] for row in q["options"]]
+    # Сохраняем варианты и используем индексы в callback_data
+    all_opts = [opt for row in q["options"] for opt in row]
+    DESIGN_ANSWERS.setdefault(user_id, {})["_current_opts"] = all_opts
+
+    rows = []
+    idx = 0
+    for row in q["options"]:
+        btn_row = []
+        for opt in row:
+            btn_row.append(InlineKeyboardButton(opt, callback_data=f"dqi_{idx}"))
+            idx += 1
+        rows.append(btn_row)
     rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
     rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="dq_skip_all")])
     kb = InlineKeyboardMarkup(rows)
@@ -448,6 +459,20 @@ async def handle_callback(update: Update, context) -> None:
         await gen_brief_variants(uid, context, q.message.chat_id, refresh=True)
 
     # Design questions
+    elif d.startswith("dqi_"):
+        # Ответ по индексу
+        idx = int(d[4:])
+        opts = DESIGN_ANSWERS.get(uid, {}).get("_current_opts", [])
+        answer = opts[idx] if idx < len(opts) else "авто"
+        step = DESIGN_STEP.get(uid, 0)
+        qs = DESIGN_QUESTIONS.get(uid, [])
+        ans = DESIGN_ANSWERS.get(uid, {})
+        if step < len(qs):
+            ans[qs[step]["question"]] = answer
+            DESIGN_ANSWERS[uid] = ans
+            DESIGN_STEP[uid] = step + 1
+            await ask_design_q(q, uid, context)
+
     elif d.startswith("dq_"):
         answer = d[3:]
         if answer == "skip_all":
