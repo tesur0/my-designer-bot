@@ -18,6 +18,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 USER_MODE: dict[int, str] = {}
+USER_TONE: dict[int, str] = {}
 DESIGN_IMAGE: dict[int, str] = {}
 DESIGN_ANSWERS: dict[int, dict] = {}
 DESIGN_QUESTIONS: dict[int, list] = {}
@@ -26,6 +27,32 @@ DESIGN_VARIANTS: dict[int, list] = {}
 BRIEF_ANSWERS: dict[int, dict] = {}
 BRIEF_STEP: dict[int, int] = {}
 BRIEF_VARIANTS: dict[int, list] = {}
+
+TONES = {
+    "my": """Пиши от лица дизайнера — живо, коротко, без воды и пафоса.
+— Простой разговорный язык, короткие предложения
+— Слова: "смотри", "по сути", "короче", "честно"
+— Никаких клише: "уникальный подход", "новый уровень"
+— Никаких эмодзи в тексте, дефис только как дефис
+— Без звёздочек и форматирования
+Главное: живо, по-человечески, без пафоса.""",
+
+    "pro": """Пиши чётко, структурированно и по делу. Деловой тон.
+— Конкретные формулировки без воды
+— Уважительно, без лишней теплоты
+— Факты и условия на первом месте
+— Без разговорных слов и сленга
+— Без эмодзи, звёздочек и форматирования
+Главное: чётко, профессионально, по существу.""",
+
+    "friendly": """Пиши тепло и располагающе, как к хорошему знакомому.
+— Мягкий и дружелюбный тон
+— Простой язык, без сухости
+— Чуть больше эмпатии и заботы
+— Без формализма, но уважительно
+— Без звёздочек и форматирования
+Главное: тепло, по-человечески, располагающе."""
+}
 
 THINKING = [
     "✦ Анализирую...",
@@ -44,18 +71,41 @@ WELCOME = (
     "Что делаем?"
 )
 
-ARTEM_STYLE = """Пиши от лица дизайнера — живо, коротко, без воды и пафоса.
-
-Правила:
-— Простой разговорный язык
-— Короткие предложения
+TONES = {
+    "my": {
+        "label": "🎨 Мой стиль",
+        "prompt": """Пиши от лица дизайнера — живо, коротко, без воды и пафоса.
+— Простой разговорный язык, короткие предложения
 — Слова: "смотри", "по сути", "короче", "честно"
 — Никаких клише: "уникальный подход", "новый уровень"
 — Никаких эмодзи в тексте
 — Дефис только как дефис, не тире
 — Без звёздочек и форматирования
+Главное: живо, по-человечески, без пафоса."""
+    },
+    "pro": {
+        "label": "💼 Профессионально",
+        "prompt": """Пиши чётко, структурированно и по делу. Деловой тон без лишних слов.
+— Конкретные формулировки без воды
+— Уважительно, но без лишней теплоты
+— Факты и условия на первом месте
+— Без разговорных слов и сленга
+— Без эмодзи, звёздочек и форматирования
+Главное: чётко, профессионально, по существу."""
+    },
+    "friendly": {
+        "label": "🤝 Дружелюбно",
+        "prompt": """Пиши тепло и располагающе, как к хорошему знакомому.
+— Мягкий и дружелюбный тон
+— Простой язык, без сухости
+— Чуть больше эмпатии и заботы
+— Без формализма, но уважительно
+— Без звёздочек и форматирования
+Главное: тепло, по-человечески, располагающе."""
+    }
+}
 
-Главное: живо и по делу."""
+USER_TONE: dict[int, str] = {}  # user_id -> tone key
 
 BRIEF_QS = [
     {"key": "situation", "q": "Что за ситуация?",
@@ -175,6 +225,14 @@ def kb_design_q(opts):
     return InlineKeyboardMarkup(rows)
 
 
+def kb_tone():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨  Мой стиль", callback_data="tone_my")],
+        [InlineKeyboardButton("💼  Профессионально", callback_data="tone_pro")],
+        [InlineKeyboardButton("🤝  Дружелюбно", callback_data="tone_friendly")],
+    ])
+
+
 def kb_volume():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝  Коротко (3–5 строк)", callback_data="vol_short")],
@@ -202,13 +260,14 @@ async def gen_design_variants(user_id, context, chat_id, refresh=False):
     img = DESIGN_IMAGE.get(user_id, "")
     ans = DESIGN_ANSWERS.get(user_id, {})
     volume = ans.get("volume", "коротко")
-    ctx = "\n".join(f"- {k}: {v}" for k, v in ans.items() if k != "volume")
+    ctx = "\n".join(f"- {k}: {v}" for k, v in ans.items() if k not in ("volume", "_current_opts"))
     seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
+    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
 
     system = f"""Напиши ровно 3 разных варианта аргументации дизайна. Каждый — другой акцент и подача.
 Объём: {volume}. Контекст: {ctx}
 Верни ТОЛЬКО JSON без markdown: ["вариант1","вариант2","вариант3"]
-{ARTEM_STYLE}"""
+{tone}"""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -238,11 +297,12 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
     ans = BRIEF_ANSWERS.get(user_id, {})
     ctx = "\n".join(f"- {k}: {v}" for k, v in ans.items())
     seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
+    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
 
-    system = f"""Напиши ровно 3 разных варианта ответа клиенту. Каждый — другой тон и подача.
+    system = f"""Напиши ровно 3 разных варианта ответа клиенту. Каждый — другой подача.
 Данные: {ctx}
 Верни ТОЛЬКО JSON без markdown: ["вариант1","вариант2","вариант3"]
-{ARTEM_STYLE}"""
+{tone}"""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -306,13 +366,13 @@ async def ask_brief_q(target, user_id, context):
     step = BRIEF_STEP.get(user_id, 0)
 
     if step >= len(BRIEF_QS):
-        chat_id = target.message.chat_id if hasattr(target, 'edit_message_text') else user_id
-        thinking = random.choice(THINKING)
+        # Спрашиваем тон перед генерацией
+        text = "🎭  Выбери тон ответа:"
         if hasattr(target, 'edit_message_text'):
-            await target.edit_message_text(thinking)
+            await target.edit_message_text(text, reply_markup=kb_tone())
         else:
-            await context.bot.send_message(chat_id=user_id, text=thinking)
-        await gen_brief_variants(user_id, context, chat_id)
+            await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb_tone())
+        USER_MODE[user_id] = "brief_tone"
         return
 
     q = BRIEF_QS[step]
@@ -422,8 +482,8 @@ async def handle_callback(update: Update, context) -> None:
     elif d.startswith("bq_"):
         answer = d[3:]
         if answer == "skip_all":
-            await q.edit_message_text(random.choice(THINKING))
-            await gen_brief_variants(uid, context, q.message.chat_id)
+            await q.edit_message_text("🎭  Выбери тон ответа:", reply_markup=kb_tone())
+            USER_MODE[uid] = "brief_tone"
         elif answer == "custom":
             USER_MODE[uid] = "brief_custom"
             step = BRIEF_STEP.get(uid, 0)
@@ -476,7 +536,6 @@ async def handle_callback(update: Update, context) -> None:
     elif d.startswith("dq_"):
         answer = d[3:]
         if answer == "skip_all":
-            # Пропускаем все вопросы и сразу к объёму
             await q.edit_message_text("📐  Какой объём аргументации?", reply_markup=kb_volume())
         else:
             step = DESIGN_STEP.get(uid, 0)
@@ -490,13 +549,23 @@ async def handle_callback(update: Update, context) -> None:
 
     elif d == "vol_short":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "коротко (3–5 строк)"
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_design_variants(uid, context, q.message.chat_id)
+        await q.edit_message_text("🎭  Выбери тон аргументации:", reply_markup=kb_tone())
+        USER_MODE[uid] = "design_tone"
 
     elif d == "vol_long":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "развёрнуто"
+        await q.edit_message_text("🎭  Выбери тон аргументации:", reply_markup=kb_tone())
+        USER_MODE[uid] = "design_tone"
+
+    elif d.startswith("tone_"):
+        tone_key = d[5:]
+        USER_TONE[uid] = tone_key
+        mode = USER_MODE.get(uid, "")
         await q.edit_message_text(random.choice(THINKING))
-        await gen_design_variants(uid, context, q.message.chat_id)
+        if mode == "design_tone":
+            await gen_design_variants(uid, context, q.message.chat_id)
+        elif mode == "brief_tone":
+            await gen_brief_variants(uid, context, q.message.chat_id)
 
     # Design variants
     elif d.startswith("pick_"):
