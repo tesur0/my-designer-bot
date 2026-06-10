@@ -9,7 +9,7 @@ from telegram.ext import (
 
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-DESIGNER_CHAT_ID: int = int(os.getenv("DESIGNER_CHAT_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -17,191 +17,111 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Состояния пользователя
+USER_MODE: dict[int, str] = {}
+USER_DATA: dict[int, dict] = {}
 CONVERSATIONS: dict[int, list[dict]] = {}
-BRIEF_SENT: dict[int, bool] = {}
-REFERENCES: dict[int, list[str]] = {}
-USER_CATEGORY: dict[int, str] = {}
 
-SYSTEM_PROMPTS = {
-    "creatives_target": """Ты — ассистент дизайнера. Клиент хочет креативы для таргетированной рекламы.
+ARTEM_STYLE = """Твоя задача — писать так, будто ты Артём, молодой диджитал-дизайнер с сильным чувством вкуса и опытом работы с клиентами.
 
-Собери по очереди (один вопрос за раз):
-1. Какой бизнес/продукт рекламируем?
-2. Какая цель рекламы — продажи, подписки, трафик?
-3. Какая площадка — Instagram, Facebook, TikTok, ВКонтакте?
-4. Сколько креативов нужно?
-5. Есть ли фирменный стиль, цвета, логотип?
-6. Есть ли референсы или примеры которые нравятся?
-7. Готовы ли тексты для баннеров?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть в дизайне?""",
+Стиль общения:
+— Пиши простым разговорным языком.
+— Избегай сложных конструкций, канцелярита и умных слов ради умных слов.
+— Текст должен ощущаться живым, а не написанным нейросетью.
+— Часто используй короткие предложения.
+— Допускаются разговорные слова: "короче", "в общем", "смотри", "по сути", "честно", "на самом деле".
+— Не будь слишком формальным.
+— Не пытайся звучать как эксперт из учебника.
+— Важнее быть понятным, чем идеально грамотным.
 
-    "creatives_stories": """Ты — ассистент дизайнера. Клиент хочет креативы для сторис.
+Особенности мышления:
+— Любишь конкретику и ненавидишь воду.
+— Всегда ищешь практическую выгоду.
+— Ценишь эстетику, премиальность и хороший визуал.
+— Скептически относишься к поверхностным советам.
+— Предпочитаешь честный разбор вместо мотивационных цитат.
 
-Собери по очереди (один вопрос за раз):
-1. Какой бизнес/продукт?
-2. Цель сторис — продажи, охват, вовлечённость?
-3. Сколько сторис нужно?
-4. Есть ли фирменный стиль, цвета, логотип?
-5. Есть ли референсы?
-6. Готовы ли тексты?
-7. Нужна ли анимация?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?""",
+Когда пишешь тексты:
+— Не используй клише вроде "выведите бизнес на новый уровень", "инновационные решения", "уникальный подход".
+— Не используй эмодзи без необходимости.
+— Не пиши слишком официально.
+— Не делай текст похожим на рекламу нейросети.
+— Пиши так, будто сообщение отправляется другу, клиенту или коллеге в Telegram.
 
-    "creatives_banner": """Ты — ассистент дизайнера. Клиент хочет баннер.
+Примеры фраз:
+"Смотри, тут можно сделать намного сильнее."
+"По сути проблема не в дизайне, а в подаче."
+"Выглядит неплохо, но есть что докрутить."
+"Я бы пошёл немного другим путём."
+"Честно, я бы на это деньги не тратил."
+"Короче, идея такая."
 
-Собери по очереди (один вопрос за раз):
-1. Где будет размещён баннер?
-2. Какой размер нужен?
-3. Какой бизнес/продукт?
-4. Цель баннера?
-5. Есть ли фирменный стиль?
-6. Есть ли референсы?
-7. Готовы ли тексты?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?""",
+Главное правило: текст должен создавать ощущение, что его написал живой человек с опытом, а не копирайтер или нейросеть."""
 
-    "creatives_other": """Ты — ассистент дизайнера. Клиент хочет креатив.
+BRIEF_SYSTEM = """Ты помогаешь дизайнеру Артёму сформулировать ответ клиенту.
 
-Собери по очереди (один вопрос за раз):
-1. Что именно нужно сделать?
-2. Какой бизнес/продукт?
-3. Где будет использоваться?
-4. Цель дизайна?
-5. Есть ли фирменный стиль?
-6. Есть ли референсы?
-7. Готовы ли материалы?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?""",
+Задавай вопросы по одному чтобы собрать всю нужную информацию:
+1. Что за ситуация — новый проект, правки, согласование, цена, сроки?
+2. Какой тип проекта?
+3. Сколько стоит работа?
+4. Какие сроки?
+5. Сколько правок включено?
+6. Есть ли предоплата?
+7. Что именно нужно сказать клиенту?
 
-    "presentation": """Ты — ассистент дизайнера. Клиент хочет презентацию.
+Когда собрал всё — напиши готовый ответ клиенту в стиле Артёма.
 
-Собери по очереди (один вопрос за раз):
-1. Для чего презентация — питч инвесторам, клиентам, внутренняя?
-2. Сколько слайдов примерно?
-3. Какой бизнес/тема?
-4. Есть ли фирменный стиль, цвета?
-5. Есть ли референсы?
-6. Готов ли контент — тексты, данные, графики?
-7. Нужна ли анимация?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?""",
+""" + ARTEM_STYLE
 
-    "logo": """Ты — ассистент дизайнера. Клиент хочет логотип.
+DESIGN_SYSTEM = """Ты помогаешь дизайнеру Артёму написать аргументацию к дизайну для клиента.
 
-Собери по очереди (один вопрос за раз):
-1. Это новый логотип или редизайн существующего?
-2. Какой бизнес/ниша?
-3. Какие ценности должен передавать логотип?
-4. Какой стиль нравится — минимализм, детализация, другое?
-5. Есть ли референсы?
-6. Какие цвета нравятся или не нравятся?
-7. Где будет использоваться логотип?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?""",
+Сначала задай вопросы:
+1. Что за проект — какой тип дизайна?
+2. Какая была задача/цель?
+3. Опиши что сделал — цвета, шрифты, композиция, решения.
+4. Почему именно такой подход?
+5. Что хотел донести этим дизайном?
 
-    "branding": """Ты — ассистент дизайнера. Клиент хочет брендинг.
+Когда собрал всё — напиши живую аргументацию в стиле Артёма. Не сухое ТЗ, а живой текст который объясняет решения и снимает вопросы клиента.
 
-Собери по очереди (один вопрос за раз):
-1. Что входит в задачу — фирменный стиль, гайдлайн, упаковка, всё вместе?
-2. Какой бизнес/ниша?
-3. Есть ли уже логотип?
-4. Какие ценности и характер бренда?
-5. Какой стиль нравится?
-6. Есть ли референсы?
-7. Какая целевая аудитория?
-8. Какой дедлайн?
-9. Какой бюджет?
-10. Что точно НЕ должно быть?"""
-}
-
-BRIEF_SUFFIX = """
-
-Правила поведения:
-- Задавай по одному вопросу
-- Если ответ размытый — уточни
-- Никогда не комментируй бюджет или сроки — просто фиксируй
-- Никаких звёздочек (*) — только чистый текст и эмодзи по смыслу
-- Стиль: коротко, по-человечески, спокойно
-
-Когда собрал всю информацию, скажи:
-"Отлично, всё понятно ✅ Передаю информацию дизайнеру — он свяжется с вами в ближайшее время."
-
-И добавь:
-===BRIEF_START===
-🎨 ПРОЕКТ: [тип работы]
-🏢 НИША: [бизнес]
-📱 ПЛАТФОРМА: [где используется]
-🎯 ЦЕЛЬ: [цель дизайна]
-🖼 РЕФЕРЕНСЫ: [есть/нет]
-✏️ ФИРМ.СТИЛЬ: [есть/нет]
-📁 МАТЕРИАЛЫ: [готовы/не готовы]
-⏰ ДЕДЛАЙН: [срок]
-💰 БЮДЖЕТ: [что сказал клиент]
-🚫 НЕ НУЖНО: [что не должно быть]
-
-👤 УРОВЕНЬ КЛИЕНТА: low / medium / high
-⚠️ РИСК: low / medium / high
-💎 БЮДЖЕТ КАТЕГОРИЯ: low-budget / mid-range / premium
-
-📝 ЗАМЕТКИ: [наблюдения]
-⚡️ ВЫЖИМКА: [2-3 предложения самого важного]
-===BRIEF_END==="""
+""" + ARTEM_STYLE
 
 
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Креативы", callback_data="cat_creatives"),
-         InlineKeyboardButton("📊 Презентация", callback_data="cat_presentation")],
-        [InlineKeyboardButton("✏️ Логотип", callback_data="cat_logo"),
-         InlineKeyboardButton("💎 Брендинг", callback_data="cat_branding")]
+        [
+            InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief"),
+            InlineKeyboardButton("🎨 Защитить дизайн", callback_data="mode_design")
+        ]
     ])
 
 
-def get_creatives_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎯 Для таргета", callback_data="sub_creatives_target"),
-         InlineKeyboardButton("📱 Для сторис", callback_data="sub_creatives_stories")],
-        [InlineKeyboardButton("🖼 Баннер", callback_data="sub_creatives_banner"),
-         InlineKeyboardButton("🔧 Другое", callback_data="sub_creatives_other")]
-    ])
-
-
-CATEGORY_NAMES = {
-    "creatives_target": "Креативы для таргета",
-    "creatives_stories": "Креативы для сторис",
-    "creatives_banner": "Баннер",
-    "creatives_other": "Креатив",
-    "presentation": "Презентация",
-    "logo": "Логотип",
-    "branding": "Брендинг"
-}
-
-async def register(update: Update, context) -> None:
-    user_id = update.effective_user.id
-    await update.message.reply_text(
-        f"✅ Твой chat_id: {user_id}\n\nДобавь в Railway Variables:\nDESIGNER_CHAT_ID = {user_id}"
-    )
-
+def is_owner(user_id: int) -> bool:
+    if OWNER_ID == 0:
+        return True  # если не настроен — пускаем всех
+    return user_id == OWNER_ID
 
 
 async def start(update: Update, context) -> None:
     user_id = update.effective_user.id
+    if not is_owner(user_id):
+        await update.message.reply_text("Нет доступа.")
+        return
+
+    USER_MODE[user_id] = ""
+    USER_DATA[user_id] = {}
     CONVERSATIONS[user_id] = []
-    BRIEF_SENT[user_id] = False
-    REFERENCES[user_id] = []
-    USER_CATEGORY[user_id] = ""
 
     await update.message.reply_text(
-        "Привет! 👋\n\nЯ помогу передать информацию о вашем проекте дизайнеру.\n\nЧто нужно сделать?",
+        "Привет 👋\n\nЧто делаем?",
         reply_markup=get_main_keyboard()
+    )
+
+
+async def register(update: Update, context) -> None:
+    user_id = update.effective_user.id
+    await update.message.reply_text(
+        f"Твой ID: {user_id}\n\nДобавь в Railway Variables:\nOWNER_ID = {user_id}"
     )
 
 
@@ -209,151 +129,82 @@ async def handle_callback(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        return
+
     data = query.data
 
-    if user_id not in CONVERSATIONS:
+    if data == "mode_brief":
+        USER_MODE[user_id] = "brief"
         CONVERSATIONS[user_id] = []
-        BRIEF_SENT[user_id] = False
-        REFERENCES[user_id] = []
-
-    if data == "cat_creatives":
         await query.edit_message_text(
-            "Какой тип креатива?",
-            reply_markup=get_creatives_keyboard()
+            "Окей, помогу составить ответ клиенту.\n\nЧто за ситуация?"
         )
-        return
 
-    # Определяем категорию
-    if data.startswith("sub_"):
-        category = data.replace("sub_", "")
-    elif data.startswith("cat_"):
-        category = data.replace("cat_", "")
-    else:
-        return
-
-    USER_CATEGORY[user_id] = category
-    category_name = CATEGORY_NAMES.get(category, "Проект")
-
-    # Первый вопрос от бота
-    system = SYSTEM_PROMPTS.get(category, SYSTEM_PROMPTS["creatives_other"]) + BRIEF_SUFFIX
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            system=system,
-            messages=[{"role": "user", "content": f"Я выбрал: {category_name}"}]
+    elif data == "mode_design":
+        USER_MODE[user_id] = "design"
+        CONVERSATIONS[user_id] = []
+        await query.edit_message_text(
+            "Окей, напишем аргументацию к дизайну.\n\nЧто за проект?"
         )
-        first_question = message.content[0].text
-        CONVERSATIONS[user_id] = [
-            {"role": "user", "content": f"Я выбрал: {category_name}"},
-            {"role": "assistant", "content": first_question}
-        ]
-        await query.edit_message_text(f"Отлично, {category_name.lower()} 👌\n\n{first_question}")
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await query.edit_message_text(f"Отлично, {category_name.lower()} 👌\n\nРасскажите подробнее о проекте.")
 
-
-async def handle_photo(update: Update, context) -> None:
-    user_id = update.effective_user.id
-    if user_id not in REFERENCES:
-        REFERENCES[user_id] = []
-    caption = update.message.caption or ""
-    REFERENCES[user_id].append(f"[фото референс{': ' + caption if caption else ''}]")
-    CONVERSATIONS.setdefault(user_id, []).append({
-        "role": "user", "content": f"Отправил фото референса. {caption}"
-    })
-    await update.message.reply_text("Референс принял 👍 Продолжаем.")
+    elif data == "back_main":
+        USER_MODE[user_id] = ""
+        CONVERSATIONS[user_id] = []
+        await query.edit_message_text(
+            "Что делаем?",
+            reply_markup=get_main_keyboard()
+        )
 
 
 async def handle_message(update: Update, context) -> None:
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "Клиент"
-    username = update.effective_user.username or ""
-    user_text = update.message.text
 
+    if not is_owner(user_id):
+        return
+
+    user_text = update.message.text
     if not user_text:
+        return
+
+    mode = USER_MODE.get(user_id, "")
+
+    if not mode:
+        await update.message.reply_text(
+            "Выбери что делаем 👇",
+            reply_markup=get_main_keyboard()
+        )
         return
 
     if user_id not in CONVERSATIONS:
         CONVERSATIONS[user_id] = []
-        BRIEF_SENT[user_id] = False
-        REFERENCES[user_id] = []
-        USER_CATEGORY[user_id] = ""
-        await update.message.reply_text(
-            "Привет! 👋 Что нужно сделать?",
-            reply_markup=get_main_keyboard()
-        )
-        return
-
-    if BRIEF_SENT.get(user_id, False):
-        await update.message.reply_text("Дизайнер уже получил вашу информацию и скоро свяжется 🙌")
-        return
-
-    if not USER_CATEGORY.get(user_id):
-        await update.message.reply_text(
-            "Выберите тип проекта 👇",
-            reply_markup=get_main_keyboard()
-        )
-        return
 
     CONVERSATIONS[user_id].append({"role": "user", "content": user_text})
     history = CONVERSATIONS[user_id][-20:]
-    category = USER_CATEGORY.get(user_id, "creatives_other")
-    system = SYSTEM_PROMPTS.get(category, SYSTEM_PROMPTS["creatives_other"]) + BRIEF_SUFFIX
+
+    system = BRIEF_SYSTEM if mode == "brief" else DESIGN_SYSTEM
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=800,
+            model="claude-sonnet-4-5",
+            max_tokens=1000,
             system=system,
             messages=history
         )
         response = message.content[0].text
+        CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
 
-        if "===BRIEF_START===" in response:
-            parts = response.split("===BRIEF_START===")
-            client_message = parts[0].strip()
-            brief_part = parts[1].split("===BRIEF_END===")[0].strip()
+        back_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("← Главное меню", callback_data="back_main")]
+        ])
 
-            refs = REFERENCES.get(user_id, [])
-            if refs:
-                brief_part += f"\n\n🖼 ФАЙЛЫ: {len(refs)} референс(ов) в чате"
-
-            await update.message.reply_text(client_message)
-
-            contact = f"@{username}" if username else user_name
-            category_name = CATEGORY_NAMES.get(category, "Проект")
-            brief_message = (
-                f"🔔 Новая заявка!\n\n"
-                f"👤 Клиент: {contact}\n"
-                f"🗂 Тип: {category_name}\n\n"
-                f"──────────────────\n\n"
-                f"{brief_part}\n\n"
-                f"──────────────────\n"
-                f"💬 Написать клиенту: tg://user?id={user_id}"
-            )
-
-            try:
-                await context.bot.send_message(
-                    chat_id=DESIGNER_CHAT_ID,
-                    text=brief_message
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить бриф: {e}")
-
-            BRIEF_SENT[user_id] = True
-            CONVERSATIONS[user_id].append({"role": "assistant", "content": client_message})
-        else:
-            await update.message.reply_text(response)
-            CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
+        await update.message.reply_text(response, reply_markup=back_keyboard)
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        await update.message.reply_text("Что-то пошло не так, попробуйте снова.")
+        await update.message.reply_text("Что-то пошло не так, попробуй снова.")
 
 
 def main():
@@ -365,10 +216,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register", register))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Бот запущен!")
+    print("🤖 Личный ассистент запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
