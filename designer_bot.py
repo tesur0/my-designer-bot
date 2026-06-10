@@ -95,7 +95,7 @@ async def start(update: Update, context) -> None:
     USER_MODE[user_id] = ""
     CONVERSATIONS[user_id] = []
     await update.message.reply_photo(
-        photo="https://i.ibb.co/VY7CY8mF/Frame-3.png",
+        photo="https://i.postimg.cc/0NHyKKnG/Frame-3.png",
         caption="Выбери что делаем 👇",
         reply_markup=get_main_keyboard()
     )
