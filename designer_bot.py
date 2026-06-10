@@ -177,6 +177,14 @@ def picked_variant_text(index: int, variant: str) -> str:
     return f"Вариант {index}\n\n{variant}"
 
 
+def compact_short_tz(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    compact = "\n".join(lines[:12])
+    if len(compact) > 950:
+        compact = compact[:947].rstrip() + "..."
+    return compact
+
+
 async def send_long_message(context, chat_id, text, reply_markup=None):
     limit = 3800
     chunks = []
@@ -578,28 +586,34 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
 
 def tz_format_prompt(format_type):
     if format_type == "short":
-        return """Сделай краткую выжимку. Не делай полноценное ТЗ.
+        return """Сделай УЛЬТРА-КРАТКУЮ выжимку. Это НЕ ТЗ и НЕ подробный разбор.
 
-Формат строго такой:
+Жёсткие правила:
+- максимум 8 строк всего;
+- максимум 900 символов;
+- не расписывай детали;
+- не делай длинные списки;
+- не используй больше 2 пунктов в одном разделе;
+- пиши как быстрый конспект для дизайнера.
 
 📝 Краткая выжимка
 
-🎯 Что хочет клиент
-1-2 короткие строки: что нужно сделать.
+🎯 Хочет:
+одна короткая строка
 
-📦 Пока что имеем
-Короткий список материалов, вводных и готовых элементов. Например: заголовок, CTA, референс, компания, продукт.
+📦 Имеем:
+1-2 коротких пункта: формат / заголовок / CTA / референс / продукт
 
-✅ Что нужно сделать
-3-6 конкретных задач.
+✅ Нужно:
+1-2 главные задачи
 
-🎨 Визуально
-Коротко: стиль, настроение, референсы, ассоциации.
+🎨 Визуально:
+2-4 слова про стиль
 
-❓ Что уточнить
-Только самые важные вопросы.
+❓ Уточнить:
+1 самый важный вопрос
 
-Пиши очень кратко. Без воды. Без символа #."""
+Если информации нет — пиши "не указано". Без символа #."""
 
     return """Сделай подробное структурированное ТЗ.
 
@@ -683,11 +697,13 @@ async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type=
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=3500,
+            max_tokens=700 if format_type == "short" else 3500,
             system=TZ_SYSTEM,
             messages=[{"role": "user", "content": content}]
         )
         result = clean(msg.content[0].text.strip())
+        if format_type == "short":
+            result = compact_short_tz(result)
         TZ_SOURCE[user_id] = {"text": text, "image": image_data, "format": format_type, "result": result}
         TZ_PENDING[user_id] = {"text": text, "image": image_data}
         USER_MODE[user_id] = ""
