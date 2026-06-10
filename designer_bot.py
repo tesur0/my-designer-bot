@@ -1,1632 +1,460 @@
-import os
-import re
-import json
+import asyncio
 import base64
-import random
+import io
 import logging
-import tempfile
-import anthropic
-from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+import os
+import random
+import re
+from dataclasses import dataclass, field
 
-TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
+import anthropic
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import Message
+from dotenv import load_dotenv
+from PIL import Image
+
+load_dotenv()
+
+TELEGRAM_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("TELEGRAM_TOKEN")
+    or "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
+)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-DATA_FILE = "/tmp/bot_data.json"
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+
+MAX_HISTORY_MESSAGES = 20
+PHOTO_BATCH_DELAY = 5
+MAX_IMAGE_SIDE = 1800
+JPEG_QUALITY = 86
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-USER_MODE: dict[int, str] = {}
-USER_TONE: dict[int, str] = {}
-DESIGN_IMAGE: dict[int, str] = {}
-DESIGN_ANSWERS: dict[int, dict] = {}
-DESIGN_QUESTIONS: dict[int, list] = {}
-DESIGN_STEP: dict[int, int] = {}
-DESIGN_VARIANTS: dict[int, list] = {}
-BRIEF_ANSWERS: dict[int, dict] = {}
-BRIEF_STEP: dict[int, int] = {}
-BRIEF_VARIANTS: dict[int, list] = {}
-TZ_SOURCE: dict[int, dict] = {}
-TZ_PENDING: dict[int, dict] = {}
-PUSH_IMAGE: dict[int, str] = {}
-PUSH_VARIANTS: dict[int, list] = {}
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+dp = Dispatcher()
+
+CHAT_HISTORY: dict[int, list[dict[str, str]]] = {}
+PHOTO_BATCHES: dict[int, dict] = {}
+
+
+@dataclass
+class RoleplayState:
+    scenario: str
+    turns: int = 0
+    messages: list[dict[str, str]] = field(default_factory=list)
+
+
+ROLEPLAYS: dict[int, RoleplayState] = {}
 
 THINKING = [
-    "⏳ Анализирую контекст...",
-    "⏳ Собираю сильные аргументы...",
-    "⏳ Формулирую варианты...",
-    "⏳ Подбираю тон ответа...",
-    "⏳ Навожу порядок в мыслях...",
+    "Разбираю переписку...",
+    "Смотрю, кто держит рамку...",
+    "Ищу точки, где теряются деньги...",
+    "Собираю нормальный ответ...",
+    "Проверяю, где клиент может слиться...",
 ]
 
-WELCOME = (
-    "✦ Привет!\n\n"
-    "Я помогаю работать с клиентами быстрее.\n\n"
-    "💬 Составлю ответ на любую ситуацию\n"
-    "🎨 Аргументирую дизайн так, чтобы клиент понял\n\n"
-    "🔎 Распознаю хаос в понятное ТЗ\n\n"
-    "📲 Помогу мягко запушить клиента\n\n"
-    "Что делаем?"
-)
+SCENARIOS = [
+    "Владелец сети детейлинг-центров в Дубае. 3 точки, открывает 4-ю. Пришёл по рекомендации. Торгуется жёстко. Средний чек $400, 40-60 заявок в месяц с Instagram.",
+    "Арбитражная команда из Украины. Есть брендбук, нужен новый стиль для соцсетей. Клиент профессиональный, проверяет экспертизу и быстро уходит, если не видит уровня.",
+    "Стартап без бюджета. Денег мало, хочет побольше за поменьше. Давит на скидку и просит по дружбе.",
+    "Эксперт с личным блогом. Женщина 35+, свой бизнес, хочет упаковку Instagram. Не знает, чего хочет, меняет решения и затягивает ответы.",
+    "Владелец премиум-ресторана в Тбилиси. Нужен ребрендинг: логотип, меню, соцсети. Бюджет есть, но он проверяет, почему так дорого.",
+    "IT-компания. Нужна упаковка HR-бренда для найма. Корпоративный клиент, формальный тон, длинное согласование.",
+    "Бьюти-бренд. Запуск новой косметики. Основательница насмотрена на Pinterest и навязывает свой стиль. Нужно удержать экспертную позицию.",
+]
 
-PUSH_CLIENT_SYSTEM = """Ты - опытный маркетолог, психолог и эксперт по продажам с опытом более 10 лет.
+SYSTEM_PROMPT = """Ты - жёсткий, прямой тренер по продажам и клиентской коммуникации для digital-дизайнера Артёма.
 
-Ты отлично понимаешь психологию клиентов, умеешь возобновлять зависшие переговоры и возвращать интерес без давления и навязчивости.
+Контекст:
+Артёму 22 года, у него 5+ лет опыта, он живёт в Грузии.
+Он делает брендинг, логотипы, упаковку Instagram/Telegram, лендинги, AI-дизайн и рекламные креативы.
+Его цель - стать премиум-дизайнером, работать с дорогими клиентами, растить личный бренд и студию.
 
-Твоя задача:
-Проанализировать скриншот переписки между пользователем и клиентом.
+Главные ошибки, которые ты отслеживаешь:
+1. Отдаёт рамку клиенту вместо своей позиции.
+2. Называет цену слишком рано или слишком низко.
+3. Навешивает задачу на клиента вместо того, чтобы снять её.
+4. Боится озвучить своё видение.
+5. Обесценивает допработу.
+6. Выпрашивает одобрение.
+7. Не держит границы по времени.
+8. Не считывает мягкий отказ.
 
-Определи:
-- о чём был разговор
-- на каком этапе остановилась коммуникация
-- кто написал последнее сообщение
-- сколько примерно прошло времени
-- какой общий тон общения
-- насколько клиент заинтересован
+Как отвечать:
+- Если это вопрос "что ответить" - дай 2-3 готовых варианта от мягкого до жёсткого и коротко объясни логику.
+- Если это переписка - найди слабые места, покажи "было -> как лучше", дай следующий ход.
+- Если это длинный диалог - разбери, кто вёл разговор, где потеряны деньги, где можно поднять чек или продать допуслугу.
+- Если Артём хочет назвать цену, сначала проверь, спросил ли он про бизнес, масштаб, заявки и средний чек. Если нет - останови и дай вопросы.
 
-После анализа напиши 3 варианта сообщения для возобновления диалога.
+Правила тона:
+- Без мотивационных фраз.
+- Без "ты молодец" и пустой поддержки.
+- Если сильно - скажи "сильно" и почему.
+- Если слабо - скажи прямо.
+- Не соглашайся автоматически.
+- Пиши по-русски, украинский понимай спокойно.
+- Без markdown-таблиц.
+- Не используй длинное тире. Только обычный дефис.
+- Не пиши как ИИ. Пиши как живой строгий наставник.
 
-Запрещено:
-- "Добрый день, хотел уточнить..."
-- "Напоминаю о себе..."
-- "Есть ли новости?"
-- "Хотел узнать ваше решение"
-- любые шаблонные фразы менеджеров
-- давление
-- манипуляции
-- чувство вины
-- ультиматумы
-- пассивная агрессия
+Ключевые принципы:
+1. Цену называй пакетом и сверху, не поэлементно и снизу.
+2. Никакой цифры, пока не задал вопросы про бизнес.
+3. Приходи с позицией: "вижу так..." вместо "какие референсы нравятся?"
+4. Привязывай цену к окупаемости клиента.
+5. Снимай задачу с клиента. Максимум 3 коротких вопроса.
+6. Допработа = отдельная цена до выполнения.
+7. Информируй, не проси разрешения.
+8. Один фоллоу-ап с достоинством, не тревожные пинги."""
 
-Каждое сообщение должно звучать как сообщение от живого человека.
-
-Варианты должны отличаться:
-Вариант 1 - через ценность. Напомнить о проекте через пользу для клиента.
-Вариант 2 - через вопрос. Лёгкий естественный вопрос, который продолжает разговор.
-Вариант 3 - через инфоповод. Новый повод написать без ощущения продажи.
-
-Ограничения:
-- максимум 2-3 предложения
-- коротко
-- без воды
-- без корпоративного стиля
-- без канцелярита
-- без эмодзи
-- без звёздочек
-- без markdown-разметки
-- использовать только обычный текст
-- дефис использовать только как дефис
-- не используй длинное тире
-
-Если по скриншоту видно, что клиент уже отказался или явно закрыл сделку:
-Не пытайся продавить его. Вместо этого сформируй 3 мягких варианта восстановления контакта на будущее.
-
-Если данных на скриншоте мало:
-Сообщи об этом кратко и всё равно предложи максимально релевантные варианты на основе доступного контекста."""
-
-TZ_SYSTEM = """Ты - профессиональный проектный менеджер, бизнес-аналитик и арт-директор с опытом работы в дизайне, маркетинге и digital-проектах.
-
-Твоя задача - превращать любой хаотичный ввод пользователя в понятное, структурированное техническое задание.
-
-На вход могут поступать переписки с клиентом, скриншоты, заметки, сообщения из Telegram, референсы, изображения, документы или смешанный формат данных.
-
-Запрещено просто пересказывать информацию.
-Нужно выделить главное, убрать мусор, объединить повторяющиеся мысли и привести всё к понятной структуре.
-Всегда анализируй материал как опытный менеджер проекта.
+ROLEPLAY_SYSTEM = """Ты играешь роль клиента в тренировке продаж для digital-дизайнера Артёма.
 
 Правила:
-- Не теряй важные детали.
-- Не добавляй информацию от себя.
-- Если данные противоречат друг другу - укажи это отдельно.
-- Если клиент формулирует мысли эмоционально или хаотично - переведи их на профессиональный язык.
-- Если информации мало - не придумывай, а формируй список уточняющих вопросов.
-- Пиши кратко, структурированно и без воды.
-- Результат должен выглядеть так, будто его подготовил сильный project manager.
-- Не используй markdown-таблицы.
-- Не используй markdown-заголовки с символом #.
-- Не используй звёздочки для выделения.
-- Используй аккуратные эмодзи в заголовках разделов, чтобы результат выглядел живее в Telegram."""
+- Будь реалистичным клиентом.
+- Торгуйся, проверяй экспертизу, иногда сомневайся и дави на скидку.
+- Не помогай Артёму слишком явно.
+- Цель тренировки - довести разговор до предоплаты.
+- После каждых 3 сообщений Артёма выйди из роли, дай короткий разбор: что сильно, что слабо, что сказать дальше. Потом вернись в роль клиента.
+- Без длинного тире. Только обычный дефис."""
 
-TONES = {
-    "my": {
-        "label": "🎨 Мой стиль",
-        "prompt": """Пиши от лица дизайнера - живо, коротко, без воды и пафоса.
-- Простой разговорный язык, короткие предложения
-- Слова: "смотри", "по сути", "короче", "честно"
-- Никаких клише: "уникальный подход", "новый уровень"
-- Никаких эмодзи в тексте
-- Дефис только как дефис, не тире
-- Без звёздочек и форматирования
-Главное: живо, по-человечески, без пафоса."""
-    },
-    "pro": {
-        "label": "💼 Профессионально",
-        "prompt": """Пиши чётко, структурированно и по делу. Деловой тон без лишних слов.
-- Конкретные формулировки без воды
-- Уважительно, но без лишней теплоты
-- Факты и условия на первом месте
-- Без разговорных слов и сленга
-- Без эмодзи, звёздочек и форматирования
-Главное: чётко, профессионально, по существу."""
-    },
-    "friendly": {
-        "label": "🤝 Дружелюбно",
-        "prompt": """Пиши тепло и располагающе, как к хорошему знакомому.
-- Мягкий и дружелюбный тон
-- Простой язык, без сухости
-- Чуть больше эмпатии и заботы
-- Без формализма, но уважительно
-- Без звёздочек и форматирования
-Главное: тепло, по-человечески, располагающе."""
-    }
-}
+RULES_TEXT = """8 принципов, которые надо держать в голове:
 
-USER_TONE: dict[int, str] = {}  # user_id -> tone key
+1. Цену называй пакетом и сверху, не "от $100".
+2. Не называй цифру до вопросов про бизнес, масштаб, заявки и средний чек.
+3. Приходи с позицией: "вижу так", а не "что вам нравится".
+4. Привязывай цену к окупаемости клиента, не к своим часам.
+5. Снимай задачу с клиента. Максимум 3 коротких вопроса.
+6. Всё сверх пакета - отдельная цена до выполнения.
+7. По срокам информируй, а не проси разрешения.
+8. Один нормальный фоллоу-ап. Без тревожных пингов."""
 
-BRIEF_QS = [
-    {"key": "situation", "q": "С чем нужно помочь?",
-     "opts": [["🆕 Новый проект", "✏️ Правки"], ["💰 Цена", "⏰ Сроки"], ["📋 Другое"]]},
-    {"key": "type", "q": "Какой тип проекта?",
-     "opts": [["🎯 Креатив", "📊 Презентация"], ["✏️ Логотип", "💎 Брендинг"], ["📁 Другое"]]},
-    {"key": "price", "q": "Какой бюджет или стоимость?",
-     "opts": [["💵 До $100", "💵 $100-300"], ["💵 $300-500", "💵 $500+"]]},
-    {"key": "deadline", "q": "Какие сроки?",
-     "opts": [["⚡ 1-2 дня", "⏱ 3-5 дней"], ["📅 1-2 недели", "🧘 Дольше"]]},
-    {"key": "revisions", "q": "Сколько правок включено?",
-     "opts": [["1️⃣ 1 правка", "2️⃣ 2 правки"], ["3️⃣ 3 правки", "♾ Без лимита"]]},
-    {"key": "prepay", "q": "Какая предоплата?",
-     "opts": [["50%", "100%"], ["🤝 Без предоплаты"]]},
-    {"key": "goal", "q": "Какой нужен результат ответа?",
-     "opts": [["📋 Обозначить условия", "🤝 Закрыть сделку"], ["🔔 Напомнить о себе", "🚫 Отказать вежливо"]]},
-]
+HELP_TEXT = """Я тренер по продажам для дизайнера.
 
-ADMIN_USERS_PER_PAGE = 8
+Что можно прислать:
+- вопрос клиента и "что ответить?"
+- скрин переписки
+- длинный диалог для разбора
+- пересланные сообщения
 
+Команды:
+/start - короткая инструкция
+/help - что умею
+/rules - 8 принципов коммуникации
+/roleplay - тренировка с клиентом
+/stop - остановить тренировку
 
-# ── Storage ───────────────────────────────────────────────────────────────────
-
-def load_data() -> dict:
-    try:
-        if Path(DATA_FILE).exists():
-            return json.loads(Path(DATA_FILE).read_text())
-    except Exception:
-        pass
-    return {"keys": {}, "users": {}}
-
-
-def save_data(data: dict):
-    try:
-        Path(DATA_FILE).write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    except Exception as e:
-        logger.error(f"Save error: {e}")
-
-
-def generate_key() -> str:
-    import string
-    return "ART-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
-
-
-def is_owner(uid: int) -> bool:
-    return OWNER_ID == 0 or uid == OWNER_ID
-
-
-def is_allowed(uid: int) -> bool:
-    if is_owner(uid):
-        return True
-    u = load_data()["users"].get(str(uid))
-    return u is not None and u.get("active", False)
+Если отправляешь несколько скринов подряд, кидай их один за другим. Я подожду 5 секунд и разберу всё вместе."""
 
 
 def clean(text: str) -> str:
-    text = text.replace("**", "").replace("__", "").replace("*", "")
     text = text.replace("\u2014", "-").replace("\u2013", "-")
-    text = re.sub(r"\n\s*-\s+", "\n- ", text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
-def variants_text(title: str, variants: list) -> str:
-    text = f"{title}\n\n"
-    for i, variant in enumerate(variants, 1):
-        text += f"{i}. {variant}\n\n"
-    return text + "Выбери вариант ниже или обнови подборку."
-
-
-def picked_variant_text(index: int, variant: str) -> str:
-    return f"Вариант {index}\n\n{variant}"
-
-
-def parse_three_variants(raw: str) -> list:
-    raw = re.sub(r'```json|```', '', raw.strip()).strip()
-    variants = []
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
-            variants = [clean(str(item)) for item in data if clean(str(item))]
-    except Exception:
-        pass
-
-    if not variants:
-        parts = re.split(r"\bВариант\s+\d+\b", raw, flags=re.IGNORECASE)
-        variants = [clean(part) for part in parts if clean(part)]
-
-    if not variants:
-        variants = [clean(raw)]
-
-    while len(variants) < 3:
-        variants.append("Не хватило данных на скриншоте. Пришли более полный фрагмент переписки, и я соберу точнее.")
-
-    return variants[:3]
-
-
-def compact_short_tz(text: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    compact = "\n".join(lines[:12])
-    compact = re.sub(r"\n?[-•]?\s*формат:\s*таблиц[^\n]*", "", compact, flags=re.IGNORECASE)
-    compact = re.sub(r"таблиц[аеиуой]* с [^,\n.]*", "таблица", compact, flags=re.IGNORECASE)
-    if len(compact) > 950:
-        compact = compact[:947].rstrip() + "..."
-    return compact
-
-
-async def send_long_message(context, chat_id, text, reply_markup=None):
-    limit = 3800
-    chunks = []
-    rest = text.strip()
-
-    while len(rest) > limit:
-        split_at = rest.rfind("\n\n", 0, limit)
-        if split_at == -1:
-            split_at = rest.rfind("\n", 0, limit)
-        if split_at == -1:
-            split_at = limit
-        chunks.append(rest[:split_at].strip())
-        rest = rest[split_at:].strip()
-
-    if rest:
-        chunks.append(rest)
-
-    for index, chunk in enumerate(chunks):
-        markup = reply_markup if index == len(chunks) - 1 else None
-        await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
-
-
-async def transcribe_voice_message(update: Update, context) -> str:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    from openai import OpenAI
-
-    media = update.message.voice or update.message.audio
-    if not media:
-        raise RuntimeError("No voice or audio file found")
-
-    suffix = ".ogg"
-    if update.message.audio and update.message.audio.file_name:
-        suffix = Path(update.message.audio.file_name).suffix or ".mp3"
-
-    tmp_path = ""
-    try:
-        tg_file = await context.bot.get_file(media.file_id)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp_path = tmp.name
-
-        await tg_file.download_to_drive(tmp_path)
-
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        with open(tmp_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="ru"
-            )
-
-        return transcript.text.strip()
-    finally:
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-
-# ── Keyboards ─────────────────────────────────────────────────────────────────
-
-def kb_main():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Ответ клиенту", callback_data="mode_brief")],
-        [InlineKeyboardButton("🎨 Аргументация дизайна", callback_data="mode_design")],
-        [InlineKeyboardButton("🔎 Распознать ТЗ", callback_data="mode_tz")],
-        [InlineKeyboardButton("📲 Запушить клиента", callback_data="mode_push_client")],
-    ])
-
-
-def kb_back_main():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← Назад в меню", callback_data="back_main")]
-    ])
-
-
-def kb_after_pick():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← К вариантам", callback_data="back_variants")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_after_brief_pick():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← К вариантам", callback_data="back_brief_variants")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_design_variants():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Вариант 1", callback_data="pick_0"),
-         InlineKeyboardButton("Вариант 2", callback_data="pick_1"),
-         InlineKeyboardButton("Вариант 3", callback_data="pick_2")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data="refresh_design")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_brief_variants():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Вариант 1", callback_data="bpick_0"),
-         InlineKeyboardButton("Вариант 2", callback_data="bpick_1"),
-         InlineKeyboardButton("Вариант 3", callback_data="bpick_2")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data="refresh_brief")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_brief_q(opts, step=0):
-    rows = []
-    for row in opts:
-        for option in row:
-            rows.append([InlineKeyboardButton(option, callback_data=f"bq_{option}")])
-    rows.append([InlineKeyboardButton("✍️ Написать свой вариант", callback_data="bq_custom")])
-    rows.append([InlineKeyboardButton("✨ Пропустить и собрать самому", callback_data="bq_skip_all")])
-    if step > 0:
-        rows.append([InlineKeyboardButton("← Назад", callback_data="bq_back")])
-    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
-    return InlineKeyboardMarkup(rows)
-
-
-def kb_design_q(opts, step=0):
-    rows = []
-    for row in opts:
-        for option in row:
-            rows.append([InlineKeyboardButton(option, callback_data=f"dq_{option}")])
-    rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
-    if step > 0:
-        rows.append([InlineKeyboardButton("← Назад", callback_data="dq_back")])
-    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
-    return InlineKeyboardMarkup(rows)
-
-
-def kb_tone():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 Мой стиль", callback_data="tone_my")],
-        [InlineKeyboardButton("💼 Профессионально", callback_data="tone_pro")],
-        [InlineKeyboardButton("🤝 Дружелюбно", callback_data="tone_friendly")],
-        [InlineKeyboardButton("← Назад", callback_data="tone_back")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_volume():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Коротко", callback_data="vol_short")],
-        [InlineKeyboardButton("📄 Развёрнуто", callback_data="vol_long")],
-        [InlineKeyboardButton("← Назад", callback_data="back_design_volume")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_custom_back(callback_data):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← Назад", callback_data=callback_data)],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_tz_input():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_tz_format():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Краткая выжимка", callback_data="tz_format_short")],
-        [InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
-        [InlineKeyboardButton("← Отправить другой материал", callback_data="mode_tz")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_after_tz():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Улучшить ТЗ", callback_data="tz_improve")],
-        [InlineKeyboardButton("📝 Кратко", callback_data="tz_format_short"),
-         InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
-        [InlineKeyboardButton("🔎 Распознать новое ТЗ", callback_data="mode_tz")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_after_push():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("← К вариантам", callback_data="back_push_variants")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def kb_push_variants():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Вариант 1", callback_data="push_pick_0"),
-         InlineKeyboardButton("Вариант 2", callback_data="push_pick_1"),
-         InlineKeyboardButton("Вариант 3", callback_data="push_pick_2")],
-        [InlineKeyboardButton("🔄 Ещё варианты", callback_data="refresh_push_client")],
-        [InlineKeyboardButton("📲 Новый скрин", callback_data="mode_push_client")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
-    ])
-
-
-def admin_stats(data):
-    users = data.get("users", {})
-    keys = data.get("keys", {})
-    active_users = sum(1 for info in users.values() if info.get("active"))
-    blocked_users = len(users) - active_users
-    unused_keys = sum(1 for key in keys.values() if not key.get("used"))
-    used_keys = len(keys) - unused_keys
-
-    return {
-        "users": len(users),
-        "active_users": active_users,
-        "blocked_users": blocked_users,
-        "keys": len(keys),
-        "unused_keys": unused_keys,
-        "used_keys": used_keys,
-    }
-
-
-def admin_home_text(data):
-    stats = admin_stats(data)
-    return (
-        "🔧 Админ-панель\n\n"
-        f"👥 Пользователи: {stats['users']}\n"
-        f"✅ Активные: {stats['active_users']}\n"
-        f"⛔ Отключены: {stats['blocked_users']}\n\n"
-        f"🔑 Ключи: {stats['keys']}\n"
-        f"🟢 Свободные: {stats['unused_keys']}\n"
-        f"⚪ Использованные: {stats['used_keys']}"
-    )
-
-
-def admin_users_text(data, page=0):
-    users = sorted(
-        data.get("users", {}).items(),
-        key=lambda item: item[1].get("name", item[0]).lower()
-    )
-    total_pages = max(1, (len(users) + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-
-    if not users:
-        return "👥 Пользователи\n\nПока никто не активировал ключ."
-
-    start = page * ADMIN_USERS_PER_PAGE
-    visible_users = users[start:start + ADMIN_USERS_PER_PAGE]
-    lines = [
-        "👥 Пользователи",
-        f"Страница {page + 1}/{total_pages}",
-        "",
-    ]
-
-    for index, (uid, info) in enumerate(visible_users, start + 1):
-        icon = "✅" if info.get("active") else "⛔"
-        name = info.get("name", uid)
-        lines.append(f"{index}. {icon} {name} - {uid}")
-
+def remember(chat_id: int, role: str, content: str) -> None:
+    history = CHAT_HISTORY.setdefault(chat_id, [])
+    history.append({"role": role, "content": content.strip()})
+    del history[:-MAX_HISTORY_MESSAGES]
+
+
+def history_text(chat_id: int) -> str:
+    history = CHAT_HISTORY.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
+    if not history:
+        return "Истории пока нет."
+
+    lines = []
+    for item in history:
+        speaker = "Артём" if item["role"] == "user" else "Бот"
+        lines.append(f"{speaker}: {item['content']}")
     return "\n".join(lines)
 
 
-def admin_keys_text(data):
-    keys = [k for k, v in data.get("keys", {}).items() if not v.get("used")]
-    stats = admin_stats(data)
-
-    if not keys:
-        keys_text = "нет свободных ключей"
-    else:
-        keys_text = "\n".join(f"`{key}`" for key in keys[-20:])
-        if len(keys) > 20:
-            keys_text += f"\n\nПоказаны последние 20 из {len(keys)} свободных ключей."
-
-    return (
-        "🔑 Ключи доступа\n\n"
-        f"Свободные: {stats['unused_keys']}\n"
-        f"Использованные: {stats['used_keys']}\n\n"
-        f"{keys_text}"
-    )
-
-
-def kb_admin_home():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users_0")],
-        [InlineKeyboardButton("🔑 Ключи доступа", callback_data="admin_keys")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data="admin_home")],
-    ])
-
-
-def kb_admin_users(data, page=0):
-    rows = []
-    users = sorted(
-        data.get("users", {}).items(),
-        key=lambda item: item[1].get("name", item[0]).lower()
-    )
-    total_pages = max(1, (len(users) + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-    start = page * ADMIN_USERS_PER_PAGE
-    visible_users = users[start:start + ADMIN_USERS_PER_PAGE]
-
-    for uid, info in visible_users:
-        name = info.get("name", uid)
-        icon = "✅" if info.get("active") else "❌"
-        label = "Отключить" if info.get("active") else "Включить"
-        rows.append([
-            InlineKeyboardButton(f"{icon} {name}", callback_data="noop"),
-            InlineKeyboardButton(label, callback_data=f"admin_toggle_{page}_{uid}")
-        ])
-
-    if total_pages > 1:
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("←", callback_data=f"admin_users_{page - 1}"))
-        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("→", callback_data=f"admin_users_{page + 1}"))
-        rows.append(nav)
-
-    rows.append([
-        InlineKeyboardButton("🔑 Ключи", callback_data="admin_keys"),
-        InlineKeyboardButton("← Меню", callback_data="admin_home")
-    ])
-    return InlineKeyboardMarkup(rows)
-
-
-def kb_admin_keys():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕  1", callback_data="admin_gen_keys_1"),
-            InlineKeyboardButton("➕  5", callback_data="admin_gen_keys_5"),
-            InlineKeyboardButton("➕  10", callback_data="admin_gen_keys_10"),
-        ],
-        [
-            InlineKeyboardButton("👥 Пользователи", callback_data="admin_users_0"),
-            InlineKeyboardButton("← Меню", callback_data="admin_home"),
-        ],
-    ])
-
-
-# ── AI helpers ────────────────────────────────────────────────────────────────
-
-async def gen_design_variants(user_id, context, chat_id, refresh=False):
-    img = DESIGN_IMAGE.get(user_id, "")
-    ans = DESIGN_ANSWERS.get(user_id, {})
-    volume = ans.get("volume", "коротко")
-    ctx = "\n".join(f"- {k}: {v}" for k, v in ans.items() if k not in ("volume", "_current_opts"))
-    seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
-    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
-
-    system = f"""Напиши ровно 3 разных варианта аргументации дизайна. Каждый - другой акцент и подача.
-Объём: {volume}. Контекст: {ctx}
-Верни ТОЛЬКО JSON без markdown: ["вариант1","вариант2","вариант3"]
-{tone}"""
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=2000, system=system,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img}},
-                {"type": "text", "text": f"3 варианта аргументации. {seed}"}
-            ]}]
-        )
-        raw = re.sub(r'```json|```', '', msg.content[0].text.strip()).strip()
-        variants = [clean(v) for v in json.loads(raw)]
-        DESIGN_VARIANTS[user_id] = variants
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=variants_text("Готово. 3 варианта аргументации:", variants),
-            reply_markup=kb_design_variants()
-        )
-    except Exception as e:
-        logger.error(f"gen_design error: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не получилось собрать аргументацию. Попробуй обновить варианты или начать заново.",
-            reply_markup=kb_back_main()
-        )
-
-
-async def gen_brief_variants(user_id, context, chat_id, refresh=False):
-    ans = BRIEF_ANSWERS.get(user_id, {})
-    ctx = "\n".join(f"- {k}: {v}" for k, v in ans.items())
-    seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
-    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
-
-    system = f"""Напиши ровно 3 разных варианта ответа клиенту. Каждый - другой подача.
-Данные: {ctx}
-Верни ТОЛЬКО JSON без markdown: ["вариант1","вариант2","вариант3"]
-{tone}"""
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=1500, system=system,
-            messages=[{"role": "user", "content": f"3 варианта ответа клиенту. {seed}"}]
-        )
-        raw = re.sub(r'```json|```', '', msg.content[0].text.strip()).strip()
-        variants = [clean(v) for v in json.loads(raw)]
-        BRIEF_VARIANTS[user_id] = variants
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=variants_text("Готово. 3 варианта ответа:", variants),
-            reply_markup=kb_brief_variants()
-        )
-    except Exception as e:
-        logger.error(f"gen_brief error: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не получилось собрать ответ. Попробуй обновить варианты или начать заново.",
-            reply_markup=kb_back_main()
-        )
-
-
-async def gen_push_client_variants(user_id, context, chat_id, refresh=False):
-    img = PUSH_IMAGE.get(user_id, "")
-    if not img:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Сначала прикрепи скрин переписки с клиентом.",
-            reply_markup=kb_back_main()
-        )
-        return
-
-    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
-    seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
-    system = f"""{PUSH_CLIENT_SYSTEM}
-
-Дополнительный тон ответа:
-{tone["prompt"]}
-
-Верни ТОЛЬКО JSON без markdown:
-["вариант 1", "вариант 2", "вариант 3"]"""
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1200,
-            system=system,
-            messages=[{"role": "user", "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": img}
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Проанализируй скрин переписки и напиши 3 варианта сообщения, "
-                        f"чтобы мягко возобновить диалог. {seed}"
-                    )
-                }
-            ]}]
-        )
-        variants = parse_three_variants(msg.content[0].text)
-        PUSH_VARIANTS[user_id] = variants
-
-        text = ""
-        for index, variant in enumerate(variants[:3], 1):
-            text += f"Вариант {index}\n\n{variant}\n\n"
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text.strip(),
-            reply_markup=kb_push_variants()
-        )
-    except Exception as e:
-        logger.error(f"gen_push_client error: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не получилось подготовить варианты. Попробуй отправить более чёткий скрин переписки.",
-            reply_markup=kb_after_push()
-        )
-
-
-def tz_format_prompt(format_type):
-    if format_type == "short":
-        return """Сделай УЛЬТРА-КРАТКУЮ выжимку. Это НЕ ТЗ и НЕ подробный разбор.
-
-Жёсткие правила:
-- максимум 8 строк всего;
-- максимум 900 символов;
-- не расписывай детали;
-- не делай длинные списки;
-- не используй больше 2 пунктов в одном разделе;
-- пиши как быстрый конспект для дизайнера.
-- строго не додумывай;
-- если клиент сказал "в таблице" в обычной фразе, НЕ выноси это как формат и НЕ пиши про таблицу;
-- пиши формат только если клиент прямо просит макет/креатив/дизайн в конкретном формате: сторис, пост, баннер, карточка, презентация и т.д.;
-- не добавляй слова "планы", "график", "программа", "оффер", "баннер", если их нет в исходном материале;
-- если что-то непонятно, лучше вынеси это в "Уточнить", а не превращай в факт.
-
-📝 Краткая выжимка
-
-🎯 Хочет:
-одна короткая строка
-
-📦 Вводные:
-1-2 коротких факта из исходника: продукт / аудитория / CTA / референс / стиль
-
-✅ Нужно:
-1-2 главные задачи
-
-🎨 Визуально:
-2-4 слова про стиль
-
-❓ Уточнить:
-1 самый важный вопрос
-
-Если информации нет - пиши "не указано". Без символа #."""
-
-    return """Сделай подробное структурированное ТЗ.
-
-Формат строго такой:
-
-📌 Проект
-Кратко опиши, что именно требуется сделать.
-
-🎯 Основная задача
-Опиши главную цель клиента простым и понятным языком.
-
-✅ Что необходимо выполнить
-Составь список конкретных задач.
-
-💬 Важные пожелания клиента
-Выпиши все пожелания, требования и ограничения.
-
-🎨 Визуальное направление
-Определи стиль, настроение, ассоциации и желаемое впечатление от результата.
-
-📎 Материалы от клиента
-Перечисли всё, что клиент уже предоставил.
-
-🧩 Чего не хватает
-Определи, какой информации недостаточно для полноценной работы.
-
-❓ Вопросы для уточнения
-Составь список вопросов, которые необходимо задать клиенту.
-
-⚠️ Потенциальные риски
-Укажи противоречия, неопределенности и моменты, которые могут вызвать проблемы в работе.
-
-📄 Итоговое ТЗ
-Собери финальное чистое техническое задание в профессиональном виде, готовое для передачи дизайнеру или исполнителю.
-
-Пиши структурированно, но без лишнего текста. Без символа #."""
-
-
-def tz_improve_prompt():
-    return """Сделай не ТЗ, а короткое человеческое сообщение клиенту от лица Артема, дизайнера.
-
-Задача: по-человечески объяснить, чего не хватает в ТЗ и что можно добавить, чтобы дизайнеру было проще сделать сильный результат.
-
-Очень важно:
-- пиши как живой человек, не как ИИ;
-- без воды, без лекции, без канцелярита;
-- не используй длинное тире, только обычный дефис "-";
-- не используй фразы: "повысит конверсию", "улучшит пользовательский опыт", "tone of voice", "визуальная коммуникация", "уникальное предложение", если таких слов нет в исходнике;
-- не расписывай очевидное;
-- не выдумывай факты;
-- максимум 1200 символов.
-
-Формат:
-
-✨ Что можно улучшить
-2-3 коротких пункта простым языком.
-
-💡 Идеи
-2-3 конкретные идеи по проекту.
-
-❓ Что нужно уточнить
-2-3 вопроса клиенту.
-
-📝 Сообщение клиенту
-Готовый короткий текст, который Артем может отправить клиенту. Тон: спокойно, уверенно, по-дизайнерски, без пафоса.
-
-Пиши от первого лица: "я бы предложил", "мне нужно уточнить", "так будет проще попасть в задачу"."""
-
-
-async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type="full"):
-    content = []
-    if image_data:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
-        })
-    content.append({
-        "type": "text",
-        "text": (
-            f"{tz_format_prompt(format_type)}\n\n"
-            "Проанализируй материал и подготовь результат в выбранном формате.\n\n"
-            f"Материал пользователя:\n{text.strip() if text.strip() else 'Материал передан изображением.'}"
-        )
-    })
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=700 if format_type == "short" else 3500,
-            system=TZ_SYSTEM,
-            messages=[{"role": "user", "content": content}]
-        )
-        result = clean(msg.content[0].text.strip())
-        if format_type == "short":
-            result = compact_short_tz(result)
-        TZ_SOURCE[user_id] = {"text": text, "image": image_data, "format": format_type, "result": result}
-        TZ_PENDING[user_id] = {"text": text, "image": image_data}
-        USER_MODE[user_id] = ""
-        await send_long_message(context, chat_id, result, reply_markup=kb_after_tz())
-    except Exception as e:
-        logger.error(f"gen_tz error: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не получилось собрать ТЗ. Попробуй отправить материал текстом или более чётким скрином.",
-            reply_markup=kb_tz_input()
-        )
-
-
-async def gen_tz_improvements(user_id, context, chat_id):
-    source = TZ_SOURCE.get(user_id) or TZ_PENDING.get(user_id)
-    if not source:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Сначала распознай ТЗ, а потом я предложу, как его улучшить.",
-            reply_markup=kb_tz_input()
-        )
-        return
-
-    text = source.get("text", "")
-    image_data = source.get("image", "")
-    result = source.get("result", "")
-    content = []
-    if image_data:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
-        })
-    content.append({
-        "type": "text",
-        "text": (
-            f"{tz_improve_prompt()}\n\n"
-            f"Исходный материал:\n{text.strip() if text.strip() else 'Материал был передан изображением.'}\n\n"
-            f"Последнее распознанное ТЗ:\n{result.strip() if result.strip() else 'ТЗ ещё не сформировано текстом.'}"
-        )
-    })
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1200,
-            system=TZ_SYSTEM,
-            messages=[{"role": "user", "content": content}]
-        )
-        answer = clean(msg.content[0].text.strip())
-        await send_long_message(context, chat_id, answer, reply_markup=kb_after_tz())
-    except Exception as e:
-        logger.error(f"gen_tz_improvements error: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не получилось подготовить идеи по улучшению ТЗ. Попробуй ещё раз.",
-            reply_markup=kb_after_tz()
-        )
-
-
-async def ask_design_q(target, user_id, context):
-    step = DESIGN_STEP.get(user_id, 0)
-    qs = DESIGN_QUESTIONS.get(user_id, [])
-
-    if step >= len(qs):
-        text = "📐 Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту."
-        kb = kb_volume()
-        if hasattr(target, 'edit_message_text'):
-            await target.edit_message_text(text, reply_markup=kb)
-        else:
-            await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
-        return
-
-    q = qs[step]
-    # Сохраняем варианты и используем индексы в callback_data
-    all_opts = [opt for row in q["options"] for opt in row]
-    DESIGN_ANSWERS.setdefault(user_id, {})["_current_opts"] = all_opts
-
-    rows = []
-    idx = 0
-    for row in q["options"]:
-        for opt in row:
-            rows.append([InlineKeyboardButton(opt, callback_data=f"dqi_{idx}")])
-            idx += 1
-    rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
-    rows.append([InlineKeyboardButton("⏭ Пропустить вопросы", callback_data="dq_skip_all")])
-    if step > 0:
-        rows.append([InlineKeyboardButton("← Назад", callback_data="dq_back")])
-    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
-    kb = InlineKeyboardMarkup(rows)
-    text = f"🎨 Вопрос {step + 1}/{len(qs)}\n\n{q['question']}\n\nМожно выбрать вариант или написать свой."
-
-    if hasattr(target, 'edit_message_text'):
-        await target.edit_message_text(text, reply_markup=kb)
-    else:
-        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
-
-
-async def ask_brief_q(target, user_id, context):
-    step = BRIEF_STEP.get(user_id, 0)
-
-    if step >= len(BRIEF_QS):
-        # Спрашиваем тон перед генерацией
-        text = "🎭 Тон ответа\n\nВыбери, как должно звучать сообщение клиенту."
-        if hasattr(target, 'edit_message_text'):
-            await target.edit_message_text(text, reply_markup=kb_tone())
-        else:
-            await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb_tone())
-        USER_MODE[user_id] = "brief_tone"
-        return
-
-    q = BRIEF_QS[step]
-    text = f"💬 Вопрос {step + 1}/{len(BRIEF_QS)}\n\n{q['q']}"
-    kb = kb_brief_q(q["opts"], step)
-
-    if hasattr(target, 'edit_message_text'):
-        await target.edit_message_text(text, reply_markup=kb)
-    else:
-        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
-
-
-# ── Handlers ──────────────────────────────────────────────────────────────────
-
-async def start(update: Update, context) -> None:
-    uid = update.effective_user.id
-    if not is_allowed(uid):
-        USER_MODE[uid] = "waiting_key"
-        await update.message.reply_text(
-            "Доступ по ключу\n\nОтправь ключ доступа, который выдал администратор.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return
-    USER_MODE[uid] = ""
-    await update.message.reply_text(WELCOME, reply_markup=kb_main())
-
-
-async def admin_cmd(update: Update, context) -> None:
-    uid = update.effective_user.id
-    if not is_owner(uid):
-        return
-    data = load_data()
-    await update.message.reply_text(
-        admin_home_text(data),
-        reply_markup=kb_admin_home()
-    )
-
-
-async def register_cmd(update: Update, context) -> None:
-    uid = update.effective_user.id
-    await update.message.reply_text(
-        f"Твой ID: `{uid}`\n\nДобавь в Railway Variables:\nOWNER_ID = {uid}",
-        parse_mode="Markdown"
-    )
-
-
-async def handle_callback(update: Update, context) -> None:
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    d = q.data
-
-    if d == "noop":
-        return
-
-    # Admin actions
-    if d == "admin_home" and is_owner(uid):
-        data = load_data()
-        await q.edit_message_text(
-            admin_home_text(data),
-            reply_markup=kb_admin_home()
-        )
-        return
-
-    if d.startswith("admin_users_") and is_owner(uid):
-        page = int(d[12:])
-        data = load_data()
-        await q.edit_message_text(
-            admin_users_text(data, page),
-            reply_markup=kb_admin_users(data, page)
-        )
-        return
-
-    if d == "admin_keys" and is_owner(uid):
-        data = load_data()
-        await q.edit_message_text(
-            admin_keys_text(data),
-            reply_markup=kb_admin_keys(), parse_mode="Markdown"
-        )
-        return
-
-    if d.startswith("admin_gen_keys_") and is_owner(uid):
-        data = load_data()
-        data.setdefault("keys", {})
-        count = int(d[15:])
-
-        keys = []
-        for _ in range(count):
-            key = generate_key()
-            while key in data["keys"]:
-                key = generate_key()
-            data["keys"][key] = {"used": False}
-            keys.append(key)
-
-        save_data(data)
-        keys_text = "\n".join(f"`{key}`" for key in keys)
-        await q.edit_message_text(
-            f"Ключи созданы\n\n{keys_text}\n\nОтправь их пользователям для входа.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔑 Все ключи", callback_data="admin_keys")],
-                [InlineKeyboardButton("← Меню", callback_data="admin_home")]
-            ]),
-            parse_mode="Markdown"
-        )
-        return
-
-    if d.startswith("admin_toggle_") and is_owner(uid):
-        parts = d.split("_", 3)
-        page = int(parts[2])
-        target_uid = parts[3]
-        data = load_data()
-        if target_uid in data["users"]:
-            data["users"][target_uid]["active"] = not data["users"][target_uid].get("active", True)
-            save_data(data)
-        await q.edit_message_text(
-            admin_users_text(data, page),
-            reply_markup=kb_admin_users(data, page)
-        )
-        return
-
-    if not is_allowed(uid):
-        await q.edit_message_text("Нет доступа. Отправь ключ доступа через /start.")
-        return
-
-    # Main navigation
-    if d == "back_main":
-        USER_MODE[uid] = ""
-        await q.edit_message_text(WELCOME, reply_markup=kb_main())
-
-    elif d == "mode_brief":
-        USER_MODE[uid] = "brief_q"
-        BRIEF_ANSWERS[uid] = {}
-        BRIEF_STEP[uid] = 0
-        await ask_brief_q(q, uid, context)
-
-    elif d == "mode_design":
-        USER_MODE[uid] = "design_wait_photo"
-        DESIGN_IMAGE[uid] = ""
-        DESIGN_ANSWERS[uid] = {}
-        DESIGN_QUESTIONS[uid] = []
-        DESIGN_STEP[uid] = 0
-        await q.edit_message_text(
-            "Аргументация дизайна\n\nПрикрепи скрин дизайна. Я задам пару вопросов и соберу варианты объяснения для клиента.",
-            reply_markup=kb_back_main()
-        )
-
-    elif d == "mode_tz":
-        USER_MODE[uid] = "tz_wait_input"
-        TZ_SOURCE[uid] = {}
-        TZ_PENDING[uid] = {}
-        await q.edit_message_text(
-            "🔎 Распознать ТЗ\n\n"
-            "Пришли хаотичное описание, переписку, заметки или скрин. "
-            "Я выделю главное и соберу понятное техническое задание.",
-            reply_markup=kb_tz_input()
-        )
-
-    elif d == "mode_push_client":
-        USER_MODE[uid] = "push_wait_photo"
-        PUSH_IMAGE[uid] = ""
-        PUSH_VARIANTS[uid] = []
-        await q.edit_message_text(
-            "Прикрепи скрин переписки с клиентом 📸",
-            reply_markup=kb_back_main()
-        )
-
-    elif d == "tz_improve":
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_tz_improvements(uid, context, q.message.chat_id)
-
-    elif d.startswith("tz_format_"):
-        pending = TZ_PENDING.get(uid) or TZ_SOURCE.get(uid)
-        if not pending:
-            USER_MODE[uid] = "tz_wait_input"
-            await q.edit_message_text(
-                "🔎 Распознать ТЗ\n\nПришли материал ещё раз, а потом выбери формат результата.",
-                reply_markup=kb_tz_input()
+def image_to_base64(raw: bytes) -> str:
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    return base64.b64encode(output.getvalue()).decode("utf-8")
+
+
+async def send_long(message: Message, text: str) -> None:
+    text = clean(text)
+    limit = 3900
+    parts = []
+    while len(text) > limit:
+        split_at = text.rfind("\n\n", 0, limit)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        parts.append(text[:split_at].strip())
+        text = text[split_at:].strip()
+    if text:
+        parts.append(text)
+
+    for part in parts:
+        await message.answer(part)
+
+
+async def call_claude(system: str, user_content, max_tokens: int = 2500) -> str:
+    if not client:
+        return "ANTHROPIC_API_KEY не задан. Добавь ключ в переменные окружения Railway."
+
+    for attempt in range(3):
+        try:
+            response = await asyncio.to_thread(
+                client.messages.create,
+                model=ANTHROPIC_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user_content}],
             )
+            return clean(response.content[0].text)
+        except Exception as exc:
+            logger.error("Claude error, attempt %s: %s", attempt + 1, exc)
+            if attempt == 2:
+                return "Сервис временно недоступен, попробуй через минуту."
+            await asyncio.sleep(0.8 * (2 ** attempt))
+
+    return "Сервис временно недоступен, попробуй через минуту."
+
+
+async def analyze_text(chat_id: int, text: str) -> str:
+    prompt = f"""Контекст последних сообщений:
+{history_text(chat_id)}
+
+Новый ввод Артёма:
+{text}
+
+Разбери ситуацию и дай конкретный следующий ход."""
+    return await call_claude(SYSTEM_PROMPT, prompt)
+
+
+async def analyze_images(chat_id: int, images: list[str], captions: list[str]) -> str:
+    content = []
+    for image in images:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": image,
+            },
+        })
+
+    caption_text = "\n".join(c for c in captions if c.strip()).strip()
+    content.append({
+        "type": "text",
+        "text": f"""На скринах переписка с клиентом.
+
+Сначала распознай текст, потом разбери коммуникацию:
+- кто ведёт разговор
+- где Артём теряет рамку, деньги или уверенность
+- что надо ответить следующим сообщением
+- дай 2-3 варианта ответа и коротко объясни, почему так
+
+Контекст последних сообщений:
+{history_text(chat_id)}
+
+Подпись к скринам:
+{caption_text if caption_text else "нет"}""",
+    })
+    return await call_claude(SYSTEM_PROMPT, content, max_tokens=3500)
+
+
+async def roleplay_reply(chat_id: int, user_text: str) -> str:
+    state = ROLEPLAYS[chat_id]
+    state.turns += 1
+    state.messages.append({"role": "user", "content": user_text})
+    state.messages = state.messages[-12:]
+
+    mode = "Продолжай играть клиента."
+    if state.turns % 3 == 0:
+        mode = "Сейчас выйди из роли, дай короткий разбор сообщения Артёма, затем вернись в роль клиента и ответь ему."
+
+    transcript = "\n".join(
+        f"{'Артём' if m['role'] == 'user' else 'Клиент'}: {m['content']}"
+        for m in state.messages
+    )
+    prompt = f"""Сценарий клиента:
+{state.scenario}
+
+Диалог:
+{transcript}
+
+Задача:
+{mode}"""
+    answer = await call_claude(ROLEPLAY_SYSTEM, prompt, max_tokens=1800)
+    state.messages.append({"role": "assistant", "content": answer})
+    state.messages = state.messages[-12:]
+    return answer
+
+
+async def final_roleplay_review(chat_id: int) -> str:
+    state = ROLEPLAYS.get(chat_id)
+    if not state:
+        return "Ролевая игра не запущена."
+
+    transcript = "\n".join(
+        f"{'Артём' if m['role'] == 'user' else 'Клиент'}: {m['content']}"
+        for m in state.messages
+    )
+    prompt = f"""Сценарий:
+{state.scenario}
+
+Диалог:
+{transcript}
+
+Дай финальный разбор:
+- где Артём держал рамку
+- где просел
+- где можно было поднять чек
+- какое следующее сообщение было бы сильным"""
+    return await call_claude(SYSTEM_PROMPT, prompt, max_tokens=1800)
+
+
+@dp.message(Command("start"))
+async def start(message: Message) -> None:
+    await message.answer(
+        "Тренер по продажам для дизайнера.\n\n"
+        "Кидай вопрос клиента, переписку текстом или скрин. Я разберу, где теряется рамка, деньги и что ответить.\n\n"
+        "Для тренировки напиши /roleplay."
+    )
+
+
+@dp.message(Command("help"))
+async def help_cmd(message: Message) -> None:
+    await message.answer(HELP_TEXT)
+
+
+@dp.message(Command("rules"))
+async def rules_cmd(message: Message) -> None:
+    await message.answer(RULES_TEXT)
+
+
+@dp.message(Command("roleplay"))
+async def roleplay_cmd(message: Message) -> None:
+    chat_id = message.chat.id
+    scenario = random.choice(SCENARIOS)
+    ROLEPLAYS[chat_id] = RoleplayState(scenario=scenario)
+
+    opener = await call_claude(
+        ROLEPLAY_SYSTEM,
+        f"""Запусти ролевую игру.
+
+Сценарий:
+{scenario}
+
+Напиши первое сообщение от лица клиента. Коротко, естественно, как в Telegram.""",
+        max_tokens=700,
+    )
+    ROLEPLAYS[chat_id].messages.append({"role": "assistant", "content": opener})
+    await message.answer(f"Ролевая игра запущена.\n\nСценарий: {scenario}\n\n{opener}")
+
+
+@dp.message(Command("stop"))
+async def stop_cmd(message: Message) -> None:
+    chat_id = message.chat.id
+    if chat_id not in ROLEPLAYS:
+        await message.answer("Ролевая игра сейчас не запущена.")
+        return
+
+    review = await final_roleplay_review(chat_id)
+    ROLEPLAYS.pop(chat_id, None)
+    await send_long(message, review)
+
+
+@dp.message(F.photo)
+async def photo_handler(message: Message, bot: Bot) -> None:
+    chat_id = message.chat.id
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    buffer = io.BytesIO()
+    await bot.download_file(file.file_path, buffer)
+
+    batch = PHOTO_BATCHES.setdefault(chat_id, {"images": [], "captions": [], "task": None, "message": message})
+    batch["images"].append(image_to_base64(buffer.getvalue()))
+    batch["captions"].append(message.caption or "")
+    batch["message"] = message
+
+    if batch.get("task"):
+        batch["task"].cancel()
+
+    batch["task"] = asyncio.create_task(process_photo_batch(chat_id))
+    await message.answer("Скрин принял. Если есть ещё - кидай сразу, подожду 5 секунд.")
+
+
+async def process_photo_batch(chat_id: int) -> None:
+    try:
+        await asyncio.sleep(PHOTO_BATCH_DELAY)
+        batch = PHOTO_BATCHES.pop(chat_id, None)
+        if not batch:
             return
 
-        format_type = "short" if d == "tz_format_short" else "full"
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_tz(
-            uid,
-            context,
-            q.message.chat_id,
-            text=pending.get("text", ""),
-            image_data=pending.get("image", ""),
-            format_type=format_type
-        )
-
-    elif d == "bq_back":
-        step = max(0, BRIEF_STEP.get(uid, 0) - 1)
-        BRIEF_STEP[uid] = step
-        BRIEF_ANSWERS.get(uid, {}).pop(BRIEF_QS[step]["key"], None)
-        USER_MODE[uid] = "brief_q"
-        await ask_brief_q(q, uid, context)
-
-    elif d == "bq_cancel_custom":
-        USER_MODE[uid] = "brief_q"
-        await ask_brief_q(q, uid, context)
-
-    elif d == "dq_back":
-        step = max(0, DESIGN_STEP.get(uid, 0) - 1)
-        qs = DESIGN_QUESTIONS.get(uid, [])
-        DESIGN_STEP[uid] = step
-        if step < len(qs):
-            DESIGN_ANSWERS.get(uid, {}).pop(qs[step]["question"], None)
-        USER_MODE[uid] = "design_q"
-        await ask_design_q(q, uid, context)
-
-    elif d == "back_design_volume":
-        qs = DESIGN_QUESTIONS.get(uid, [])
-        if qs:
-            current_step = DESIGN_STEP.get(uid, 0)
-            DESIGN_STEP[uid] = len(qs) - 1 if current_step >= len(qs) else max(0, current_step)
-            DESIGN_ANSWERS.get(uid, {}).pop(qs[DESIGN_STEP[uid]]["question"], None)
-            USER_MODE[uid] = "design_q"
-            await ask_design_q(q, uid, context)
-        else:
-            USER_MODE[uid] = "design_wait_photo"
-            await q.edit_message_text(
-                "🎨 Аргументация дизайна\n\nПрикрепи скрин дизайна. Я задам пару вопросов и соберу варианты объяснения для клиента.",
-                reply_markup=kb_back_main()
-            )
-
-    elif d == "tone_back":
-        mode = USER_MODE.get(uid, "")
-        if mode == "brief_tone":
-            current_step = BRIEF_STEP.get(uid, 0)
-            BRIEF_STEP[uid] = max(0, min(current_step, len(BRIEF_QS) - 1))
-            BRIEF_ANSWERS.get(uid, {}).pop(BRIEF_QS[BRIEF_STEP[uid]]["key"], None)
-            USER_MODE[uid] = "brief_q"
-            await ask_brief_q(q, uid, context)
-        elif mode == "design_tone":
-            USER_MODE[uid] = "design_q"
-            await q.edit_message_text(
-                "📐 Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту.",
-                reply_markup=kb_volume()
-            )
-        elif mode == "push_tone":
-            USER_MODE[uid] = "push_wait_photo"
-            await q.edit_message_text(
-                "Прикрепи скрин переписки с клиентом 📸",
-                reply_markup=kb_back_main()
-            )
-        else:
-            await q.edit_message_text(WELCOME, reply_markup=kb_main())
-
-    # Brief questions
-    elif d.startswith("bq_"):
-        answer = d[3:]
-        if answer == "skip_all":
-            await q.edit_message_text("🎭 Тон ответа\n\nВыбери, как должно звучать сообщение клиенту.", reply_markup=kb_tone())
-            USER_MODE[uid] = "brief_tone"
-        elif answer == "custom":
-            USER_MODE[uid] = "brief_custom"
-            step = BRIEF_STEP.get(uid, 0)
-            hint = BRIEF_QS[step]["q"] if step < len(BRIEF_QS) else "Опиши:"
-            await q.edit_message_text(
-                f"✍️ {hint}\n\nНапиши свой вариант одним сообщением.",
-                reply_markup=kb_custom_back("bq_cancel_custom")
-            )
-        else:
-            step = BRIEF_STEP.get(uid, 0)
-            ans = BRIEF_ANSWERS.get(uid, {})
-            if step < len(BRIEF_QS):
-                ans[BRIEF_QS[step]["key"]] = answer
-                BRIEF_ANSWERS[uid] = ans
-                BRIEF_STEP[uid] = step + 1
-                await ask_brief_q(q, uid, context)
-
-    # Brief variants
-    elif d.startswith("bpick_"):
-        idx = int(d[6:])
-        variants = BRIEF_VARIANTS.get(uid, [])
-        if idx < len(variants):
-            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_brief_pick())
-
-    elif d == "back_brief_variants":
-        variants = BRIEF_VARIANTS.get(uid, [])
-        if variants:
-            await q.edit_message_text(
-                variants_text("Готово. 3 варианта ответа:", variants),
-                reply_markup=kb_brief_variants()
-            )
-
-    elif d == "refresh_brief":
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_brief_variants(uid, context, q.message.chat_id, refresh=True)
-
-    # Design questions
-    elif d.startswith("dqi_"):
-        # Ответ по индексу
-        idx = int(d[4:])
-        opts = DESIGN_ANSWERS.get(uid, {}).get("_current_opts", [])
-        answer = opts[idx] if idx < len(opts) else "авто"
-        step = DESIGN_STEP.get(uid, 0)
-        qs = DESIGN_QUESTIONS.get(uid, [])
-        ans = DESIGN_ANSWERS.get(uid, {})
-        if step < len(qs):
-            ans[qs[step]["question"]] = answer
-            DESIGN_ANSWERS[uid] = ans
-            DESIGN_STEP[uid] = step + 1
-            await ask_design_q(q, uid, context)
-
-    elif d.startswith("dq_"):
-        answer = d[3:]
-        if answer == "skip_all":
-            await q.edit_message_text(
-                "Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту.",
-                reply_markup=kb_volume()
-            )
-        else:
-            step = DESIGN_STEP.get(uid, 0)
-            qs = DESIGN_QUESTIONS.get(uid, [])
-            ans = DESIGN_ANSWERS.get(uid, {})
-            if step < len(qs):
-                ans[qs[step]["question"]] = answer
-                DESIGN_ANSWERS[uid] = ans
-                DESIGN_STEP[uid] = step + 1
-                await ask_design_q(q, uid, context)
-
-    elif d == "vol_short":
-        DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "коротко (3-5 строк)"
-        await q.edit_message_text("🎭 Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
-        USER_MODE[uid] = "design_tone"
-
-    elif d == "vol_long":
-        DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "развёрнуто"
-        await q.edit_message_text("🎭 Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
-        USER_MODE[uid] = "design_tone"
-
-    elif d.startswith("tone_"):
-        tone_key = d[5:]
-        USER_TONE[uid] = tone_key
-        mode = USER_MODE.get(uid, "")
-        await q.edit_message_text(random.choice(THINKING))
-        if mode == "design_tone":
-            await gen_design_variants(uid, context, q.message.chat_id)
-        elif mode == "brief_tone":
-            await gen_brief_variants(uid, context, q.message.chat_id)
-        elif mode == "push_tone":
-            await gen_push_client_variants(uid, context, q.message.chat_id)
-
-    # Design variants
-    elif d.startswith("pick_"):
-        idx = int(d[5:])
-        variants = DESIGN_VARIANTS.get(uid, [])
-        if idx < len(variants):
-            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_pick())
-
-    elif d == "back_variants":
-        variants = DESIGN_VARIANTS.get(uid, [])
-        if variants:
-            await q.edit_message_text(
-                variants_text("Готово. 3 варианта аргументации:", variants),
-                reply_markup=kb_design_variants()
-            )
-
-    elif d == "refresh_design":
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_design_variants(uid, context, q.message.chat_id, refresh=True)
-
-    elif d == "refresh_push_client":
-        await q.edit_message_text(random.choice(THINKING))
-        await gen_push_client_variants(uid, context, q.message.chat_id, refresh=True)
-
-    elif d.startswith("push_pick_"):
-        idx = int(d[10:])
-        variants = PUSH_VARIANTS.get(uid, [])
-        if idx < len(variants):
-            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_push())
-
-    elif d == "back_push_variants":
-        variants = PUSH_VARIANTS.get(uid, [])
-        if variants:
-            text = ""
-            for index, variant in enumerate(variants[:3], 1):
-                text += f"Вариант {index}\n\n{variant}\n\n"
-            await q.edit_message_text(text.strip(), reply_markup=kb_push_variants())
-
-
-async def handle_photo(update: Update, context) -> None:
-    uid = update.effective_user.id
-    if not is_allowed(uid):
-        return
-
-    mode = USER_MODE.get(uid, "")
-
-    if mode == "tz_wait_input":
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        file_bytes = await file.download_as_bytearray()
-        img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
-        caption = update.message.caption or ""
-
-        TZ_PENDING[uid] = {"text": caption, "image": img_data}
-        USER_MODE[uid] = "tz_choose_format"
-        await update.message.reply_text(
-            "Материал получил.\n\nКак подготовить результат?",
-            reply_markup=kb_tz_format()
-        )
-        return
-
-    if mode == "push_wait_photo":
-        thinking_msg = await update.message.reply_text(random.choice(THINKING))
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        file_bytes = await file.download_as_bytearray()
-        img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
-        PUSH_IMAGE[uid] = img_data
-        USER_MODE[uid] = "push_tone"
-
+        message = batch["message"]
+        status = await message.answer(random.choice(THINKING))
+        answer = await analyze_images(chat_id, batch["images"], batch["captions"])
+        remember(chat_id, "user", f"Отправил {len(batch['images'])} скрин(ов) переписки.")
+        remember(chat_id, "assistant", answer)
+        await send_long(message, answer)
         try:
-            await thinking_msg.delete()
+            await status.delete()
         except Exception:
             pass
-
-        await update.message.reply_text(
-            "🎭 Выбери тон сообщения:",
-            reply_markup=kb_tone()
-        )
+    except asyncio.CancelledError:
         return
-
-    if mode != "design_wait_photo":
-        await update.message.reply_text("Сначала выбери режим в главном меню.", reply_markup=kb_main())
-        return
-
-    thinking_msg = await update.message.reply_text(random.choice(THINKING))
-
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    file_bytes = await file.download_as_bytearray()
-    img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
-    DESIGN_IMAGE[uid] = img_data
-
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=500,
-            system="""Ты помогаешь дизайнеру аргументировать работу клиенту.
-Посмотри на дизайн и задай 2 вопроса которые помогут написать убедительную аргументацию.
-Вопросы должны быть про: цель дизайна, целевую аудиторию, стиль, настроение, контекст использования.
-НЕ спрашивай про: технические детали, текст на картинке, даты, цифры, названия.
-Варианты ответов должны быть короткими (2-4 слова) и релевантными.
-Верни ТОЛЬКО JSON без markdown и пояснений:
-[{"question":"Вопрос?","options":[["Вариант А","Вариант Б"],["Вариант В"]]}]""",
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}},
-                {"type": "text", "text": "Задай 2 вопроса для аргументации этого дизайна."}
-            ]}]
-        )
-        raw = re.sub(r'```json|```', '', msg.content[0].text.strip()).strip()
-        DESIGN_QUESTIONS[uid] = json.loads(raw)
-    except Exception as e:
-        logger.error(f"Photo analyze error: {e}")
-        DESIGN_QUESTIONS[uid] = []
-
-    DESIGN_STEP[uid] = 0
-    USER_MODE[uid] = "design_q"
-
-    try:
-        await thinking_msg.delete()
-    except Exception:
-        pass
-
-    await ask_design_q(update.message, uid, context)
+    except Exception as exc:
+        logger.error("photo batch error: %s", exc)
 
 
-async def handle_message(update: Update, context) -> None:
-    uid = update.effective_user.id
-    text = update.message.text
+@dp.message(F.text)
+async def text_handler(message: Message) -> None:
+    chat_id = message.chat.id
+    text = message.text.strip()
     if not text:
         return
 
-    mode = USER_MODE.get(uid, "")
-
-    if mode == "waiting_key":
-        data = load_data()
-        key = text.strip().upper()
-        if key in data["keys"] and not data["keys"][key].get("used"):
-            data["keys"][key]["used"] = True
-            name = update.effective_user.first_name or str(uid)
-            data["users"][str(uid)] = {"active": True, "name": name, "key": key}
-            save_data(data)
-            USER_MODE[uid] = ""
-            await update.message.reply_text(f"Доступ открыт\n\n{WELCOME}", reply_markup=kb_main())
-        else:
-            await update.message.reply_text("Ключ не подошёл. Проверь написание или попроси новый ключ у администратора.")
-        return
-
-    if not is_allowed(uid):
-        USER_MODE[uid] = "waiting_key"
-        await update.message.reply_text("Отправь ключ доступа, чтобы продолжить.")
-        return
-
-    if mode == "design_wait_photo":
-        await update.message.reply_text(
-            "Пришли скрин дизайна изображением. После этого я задам уточняющие вопросы.",
-            reply_markup=kb_back_main()
-        )
-        return
-
-    if mode == "push_wait_photo":
-        await update.message.reply_text(
-            "Прикрепи скрин переписки с клиентом 📸",
-            reply_markup=kb_back_main()
-        )
-        return
-
-    if not mode:
-        await update.message.reply_text(WELCOME, reply_markup=kb_main())
-        return
-
-    if mode == "tz_wait_input":
-        TZ_PENDING[uid] = {"text": text, "image": ""}
-        USER_MODE[uid] = "tz_choose_format"
-        await update.message.reply_text(
-            "Материал получил.\n\nКак подготовить результат?",
-            reply_markup=kb_tz_format()
-        )
-        return
-
-    if mode == "tz_choose_format":
-        await update.message.reply_text(
-            "Выбери формат кнопкой ниже.",
-            reply_markup=kb_tz_format()
-        )
-        return
-
-    if mode == "design_q":
-        step = DESIGN_STEP.get(uid, 0)
-        qs = DESIGN_QUESTIONS.get(uid, [])
-        ans = DESIGN_ANSWERS.get(uid, {})
-        if step < len(qs):
-            ans[qs[step]["question"]] = text
-            DESIGN_ANSWERS[uid] = ans
-            DESIGN_STEP[uid] = step + 1
-            await ask_design_q(update.message, uid, context)
-        return
-
-    if mode == "brief_q":
-        await update.message.reply_text("Выбери вариант кнопкой или нажми «Написать свой вариант».")
-        return
-
-    if mode == "brief_custom":
-        step = BRIEF_STEP.get(uid, 0)
-        ans = BRIEF_ANSWERS.get(uid, {})
-        if step < len(BRIEF_QS):
-            ans[BRIEF_QS[step]["key"]] = text
-            BRIEF_ANSWERS[uid] = ans
-            BRIEF_STEP[uid] = step + 1
-            USER_MODE[uid] = "brief_q"
-            await ask_brief_q(update.message, uid, context)
-        return
-
-
-async def handle_unsupported_input(update: Update, context) -> None:
-    uid = update.effective_user.id
-    if not is_allowed(uid):
-        return
-
-    mode = USER_MODE.get(uid, "")
-    if mode == "tz_wait_input":
-        await update.message.reply_text(
-            "Пока я лучше всего работаю с текстом и скринами.\n\n"
-            "Если это голосовое или документ, пришли короткую расшифровку, текст из файла или скрин содержимого.",
-            reply_markup=kb_tz_input()
-        )
-    else:
-        await update.message.reply_text("Выбери режим в главном меню.", reply_markup=kb_main())
-
-
-async def handle_voice(update: Update, context) -> None:
-    uid = update.effective_user.id
-    if not is_allowed(uid):
-        return
-
-    mode = USER_MODE.get(uid, "")
-    if mode != "tz_wait_input":
-        await update.message.reply_text(
-            "Голосовое можно распознать в режиме «🔎 Распознать ТЗ».",
-            reply_markup=kb_main()
-        )
-        return
-
-    thinking_msg = await update.message.reply_text("🎧 Распознаю голосовое...")
-
-    try:
-        transcript = await transcribe_voice_message(update, context)
-        if not transcript:
-            raise RuntimeError("Empty transcript")
-
-        TZ_PENDING[uid] = {"text": f"Расшифровка голосового сообщения:\n{transcript}", "image": ""}
-        USER_MODE[uid] = "tz_choose_format"
-        await update.message.reply_text(
-            "Голосовое распознал.\n\nКак подготовить результат?",
-            reply_markup=kb_tz_format()
-        )
-    except RuntimeError as e:
-        logger.error(f"voice_transcribe config error: {e}")
-        await update.message.reply_text(
-            "Не получилось распознать голосовое.\n\n"
-            "Проверь, что в Railway Variables добавлен OPENAI_API_KEY, или пришли текст/скрин.",
-            reply_markup=kb_tz_input()
-        )
-    except Exception as e:
-        logger.error(f"voice_transcribe error: {e}")
-        await update.message.reply_text(
-            "Не получилось распознать голосовое. Попробуй отправить его ещё раз или пришли текстом.",
-            reply_markup=kb_tz_input()
-        )
-    finally:
+    if chat_id in ROLEPLAYS:
+        status = await message.answer(random.choice(THINKING))
+        answer = await roleplay_reply(chat_id, text)
+        await send_long(message, answer)
         try:
-            await thinking_msg.delete()
+            await status.delete()
         except Exception:
             pass
-
-
-def main():
-    if not ANTHROPIC_API_KEY:
-        print("❌ Установи ANTHROPIC_API_KEY")
         return
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_cmd))
-    app.add_handler(CommandHandler("register", register_cmd))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_unsupported_input))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Бот запущен!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    status = await message.answer(random.choice(THINKING))
+    answer = await analyze_text(chat_id, text)
+    remember(chat_id, "user", text)
+    remember(chat_id, "assistant", answer)
+    await send_long(message, answer)
+    try:
+        await status.delete()
+    except Exception:
+        pass
+
+
+@dp.message()
+async def fallback_handler(message: Message) -> None:
+    await message.answer("Пришли текст, пересланное сообщение или скрин переписки. Документы и голосовые пока лучше переслать текстом.")
+
+
+async def main() -> None:
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+    bot = Bot(token=TELEGRAM_TOKEN)
+    logger.info("Sales coach bot started")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
