@@ -508,10 +508,10 @@ async def handle_photo(update: Update, context) -> None:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
             model="claude-sonnet-4-5", max_tokens=500,
-            system='Анализируй дизайн и дай 2-3 вопроса. Верни ТОЛЬКО JSON без markdown: [{"question":"?","options":[["A","B"]]}]',
+            system='Анализируй дизайн и задай 2-3 вопроса только про стиль, цель и целевую аудиторию. Не спрашивай про технические детали, даты, текст на картинке или конкретные элементы макета. Верни ТОЛЬКО JSON без markdown: [{"question":"?","options":[["A","B"]]}]',
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}},
-                {"type": "text", "text": "Вопросы для аргументации."}
+                {"type": "text", "text": "Задай вопросы про стиль, цель и аудиторию."}
             ]}]
         )
         raw = re.sub(r'```json|```', '', msg.content[0].text.strip()).strip()
