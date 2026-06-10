@@ -27,6 +27,7 @@ DESIGN_VARIANTS: dict[int, list] = {}
 BRIEF_ANSWERS: dict[int, dict] = {}
 BRIEF_STEP: dict[int, int] = {}
 BRIEF_VARIANTS: dict[int, list] = {}
+TZ_SOURCE: dict[int, dict] = {}
 
 THINKING = [
     "⏳ Анализирую контекст...",
@@ -41,8 +42,62 @@ WELCOME = (
     "Я помогаю работать с клиентами быстрее.\n\n"
     "💬 Составлю ответ на любую ситуацию\n"
     "🎨 Аргументирую дизайн так, чтобы клиент понял\n\n"
+    "✨ Превращу хаос в понятное ТЗ\n\n"
     "Что делаем?"
 )
+
+TZ_SYSTEM = """Ты — профессиональный проектный менеджер, бизнес-аналитик и арт-директор с опытом работы в дизайне, маркетинге и digital-проектах.
+
+Твоя задача — превращать любой хаотичный ввод пользователя в понятное, структурированное техническое задание.
+
+На вход могут поступать переписки с клиентом, скриншоты, заметки, сообщения из Telegram, референсы, изображения, документы или смешанный формат данных.
+
+Запрещено просто пересказывать информацию.
+Нужно выделить главное, убрать мусор, объединить повторяющиеся мысли и привести всё к понятной структуре.
+Всегда анализируй материал как опытный менеджер проекта.
+
+Сформируй результат строго по этой структуре:
+
+# Проект
+Кратко опиши, что именно требуется сделать.
+
+# Основная задача
+Опиши главную цель клиента простым и понятным языком.
+
+# Что необходимо выполнить
+Составь список конкретных задач.
+
+# Важные пожелания клиента
+Выпиши все пожелания, требования и ограничения.
+
+# Визуальное направление
+Определи стиль, настроение, ассоциации и желаемое впечатление от результата.
+
+# Материалы от клиента
+Перечисли всё, что клиент уже предоставил.
+
+# Чего не хватает
+Определи, какой информации недостаточно для полноценной работы.
+
+# Вопросы для уточнения
+Составь список вопросов, которые необходимо задать клиенту.
+
+# Потенциальные риски
+Укажи противоречия, неопределенности и моменты, которые могут вызвать проблемы в работе.
+
+# Итоговое ТЗ
+Собери финальное чистое техническое задание в профессиональном виде, готовое для передачи дизайнеру или исполнителю.
+
+Правила:
+- Не теряй важные детали.
+- Не добавляй информацию от себя.
+- Если данные противоречат друг другу — укажи это отдельно.
+- Если клиент формулирует мысли эмоционально или хаотично — переведи их на профессиональный язык.
+- Если информации мало — не придумывай, а формируй список уточняющих вопросов.
+- Пиши кратко, структурированно и без воды.
+- Результат должен выглядеть так, будто его подготовил сильный project manager.
+- Не используй markdown-таблицы.
+- Не используй звёздочки для выделения."""
 
 TONES = {
     "my": {
@@ -149,12 +204,35 @@ def picked_variant_text(index: int, variant: str) -> str:
     return f"Вариант {index}\n\n{variant}"
 
 
+async def send_long_message(context, chat_id, text, reply_markup=None):
+    limit = 3800
+    chunks = []
+    rest = text.strip()
+
+    while len(rest) > limit:
+        split_at = rest.rfind("\n\n", 0, limit)
+        if split_at == -1:
+            split_at = rest.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(rest[:split_at].strip())
+        rest = rest[split_at:].strip()
+
+    if rest:
+        chunks.append(rest)
+
+    for index, chunk in enumerate(chunks):
+        markup = reply_markup if index == len(chunks) - 1 else None
+        await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
+
+
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def kb_main():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Ответ клиенту", callback_data="mode_brief")],
         [InlineKeyboardButton("🎨 Аргументация дизайна", callback_data="mode_design")],
+        [InlineKeyboardButton("✨ Улучшить ТЗ", callback_data="mode_tz")],
     ])
 
 
@@ -245,6 +323,19 @@ def kb_volume():
 def kb_custom_back(callback_data):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("← Назад", callback_data=callback_data)],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
+def kb_tz_input():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
+def kb_after_tz():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✨ Улучшить ещё", callback_data="mode_tz")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
@@ -461,6 +552,41 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
         )
 
 
+async def gen_tz(user_id, context, chat_id, text="", image_data=""):
+    content = []
+    if image_data:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
+        })
+    content.append({
+        "type": "text",
+        "text": (
+            "Проанализируй материал и подготовь структурированное ТЗ.\n\n"
+            f"Материал пользователя:\n{text.strip() if text.strip() else 'Материал передан изображением.'}"
+        )
+    })
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=3500,
+            system=TZ_SYSTEM,
+            messages=[{"role": "user", "content": content}]
+        )
+        result = clean(msg.content[0].text.strip())
+        TZ_SOURCE[user_id] = {"text": text, "image": image_data}
+        await send_long_message(context, chat_id, result, reply_markup=kb_after_tz())
+    except Exception as e:
+        logger.error(f"gen_tz error: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Не получилось собрать ТЗ. Попробуй отправить материал текстом или более чётким скрином.",
+            reply_markup=kb_tz_input()
+        )
+
+
 async def ask_design_q(target, user_id, context):
     step = DESIGN_STEP.get(user_id, 0)
     qs = DESIGN_QUESTIONS.get(user_id, [])
@@ -656,6 +782,16 @@ async def handle_callback(update: Update, context) -> None:
             reply_markup=kb_back_main()
         )
 
+    elif d == "mode_tz":
+        USER_MODE[uid] = "tz_wait_input"
+        TZ_SOURCE[uid] = {}
+        await q.edit_message_text(
+            "✨ Улучшить ТЗ\n\n"
+            "Пришли хаотичное описание, переписку, заметки или скрин. "
+            "Я выделю главное и соберу чистое техническое задание.",
+            reply_markup=kb_tz_input()
+        )
+
     elif d == "bq_back":
         step = max(0, BRIEF_STEP.get(uid, 0) - 1)
         BRIEF_STEP[uid] = step
@@ -829,6 +965,22 @@ async def handle_photo(update: Update, context) -> None:
 
     mode = USER_MODE.get(uid, "")
 
+    if mode == "tz_wait_input":
+        thinking_msg = await update.message.reply_text(random.choice(THINKING))
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        file_bytes = await file.download_as_bytearray()
+        img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
+        caption = update.message.caption or ""
+
+        USER_MODE[uid] = ""
+        await gen_tz(uid, context, update.message.chat_id, text=caption, image_data=img_data)
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+        return
+
     if mode != "design_wait_photo":
         await update.message.reply_text("Сначала выбери режим в главном меню.", reply_markup=kb_main())
         return
@@ -912,6 +1064,16 @@ async def handle_message(update: Update, context) -> None:
         await update.message.reply_text(WELCOME, reply_markup=kb_main())
         return
 
+    if mode == "tz_wait_input":
+        thinking_msg = await update.message.reply_text(random.choice(THINKING))
+        USER_MODE[uid] = ""
+        await gen_tz(uid, context, update.message.chat_id, text=text)
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+        return
+
     if mode == "design_q":
         step = DESIGN_STEP.get(uid, 0)
         qs = DESIGN_QUESTIONS.get(uid, [])
@@ -939,6 +1101,22 @@ async def handle_message(update: Update, context) -> None:
         return
 
 
+async def handle_unsupported_input(update: Update, context) -> None:
+    uid = update.effective_user.id
+    if not is_allowed(uid):
+        return
+
+    mode = USER_MODE.get(uid, "")
+    if mode == "tz_wait_input":
+        await update.message.reply_text(
+            "Пока я лучше всего работаю с текстом и скринами.\n\n"
+            "Если это голосовое или документ, пришли короткую расшифровку, текст из файла или скрин содержимого.",
+            reply_markup=kb_tz_input()
+        )
+    else:
+        await update.message.reply_text("Выбери режим в главном меню.", reply_markup=kb_main())
+
+
 def main():
     if not ANTHROPIC_API_KEY:
         print("❌ Установи ANTHROPIC_API_KEY")
@@ -949,6 +1127,7 @@ def main():
     app.add_handler(CommandHandler("register", register_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE | filters.Document.ALL, handle_unsupported_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
