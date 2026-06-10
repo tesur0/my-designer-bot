@@ -45,7 +45,7 @@ WELCOME = (
     "Я помогаю работать с клиентами быстрее.\n\n"
     "💬 Составлю ответ на любую ситуацию\n"
     "🎨 Аргументирую дизайн так, чтобы клиент понял\n\n"
-    "✨ Превращу хаос в понятное ТЗ\n\n"
+    "🔎 Распознаю хаос в понятное ТЗ\n\n"
     "Что делаем?"
 )
 
@@ -244,7 +244,7 @@ def kb_main():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Ответ клиенту", callback_data="mode_brief")],
         [InlineKeyboardButton("🎨 Аргументация дизайна", callback_data="mode_design")],
-        [InlineKeyboardButton("✨ Улучшить ТЗ", callback_data="mode_tz")],
+        [InlineKeyboardButton("🔎 Распознать ТЗ", callback_data="mode_tz")],
     ])
 
 
@@ -356,9 +356,10 @@ def kb_tz_format():
 
 def kb_after_tz():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Улучшить ещё", callback_data="mode_tz")],
+        [InlineKeyboardButton("✨ Улучшить ТЗ", callback_data="tz_improve")],
         [InlineKeyboardButton("📝 Кратко", callback_data="tz_format_short"),
          InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
+        [InlineKeyboardButton("🔎 Распознать новое ТЗ", callback_data="mode_tz")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
@@ -637,6 +638,31 @@ def tz_format_prompt(format_type):
 Пиши структурированно, но без лишнего текста. Без символа #."""
 
 
+def tz_improve_prompt():
+    return """Сделай не ТЗ, а сообщение клиенту от лица Артема — дизайнера.
+
+Задача: трушно, спокойно и профессионально объяснить клиенту, как можно улучшить ТЗ, чтобы результат получился сильнее.
+
+Формат:
+
+✨ Как можно усилить ТЗ
+Короткое вступление от лица дизайнера.
+
+💡 Что я бы предложил добавить
+Список конкретных идей и улучшений.
+
+🎯 Что это даст
+Коротко объясни пользу для результата: яснее креатив, точнее визуал, меньше правок, понятнее CTA и т.д.
+
+❓ Что нужно уточнить
+Список вопросов клиенту.
+
+📝 Сообщение клиенту
+Готовый текст, который Артем может отправить клиенту.
+
+Тон: живой, уверенный, без канцелярита, без пафоса. Пиши от первого лица дизайнера. Не добавляй факты от себя. Если данных мало, предлагай уточнения."""
+
+
 async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type="full"):
     content = []
     if image_data:
@@ -662,7 +688,7 @@ async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type=
             messages=[{"role": "user", "content": content}]
         )
         result = clean(msg.content[0].text.strip())
-        TZ_SOURCE[user_id] = {"text": text, "image": image_data, "format": format_type}
+        TZ_SOURCE[user_id] = {"text": text, "image": image_data, "format": format_type, "result": result}
         TZ_PENDING[user_id] = {"text": text, "image": image_data}
         USER_MODE[user_id] = ""
         await send_long_message(context, chat_id, result, reply_markup=kb_after_tz())
@@ -672,6 +698,53 @@ async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type=
             chat_id=chat_id,
             text="Не получилось собрать ТЗ. Попробуй отправить материал текстом или более чётким скрином.",
             reply_markup=kb_tz_input()
+        )
+
+
+async def gen_tz_improvements(user_id, context, chat_id):
+    source = TZ_SOURCE.get(user_id) or TZ_PENDING.get(user_id)
+    if not source:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Сначала распознай ТЗ, а потом я предложу, как его улучшить.",
+            reply_markup=kb_tz_input()
+        )
+        return
+
+    text = source.get("text", "")
+    image_data = source.get("image", "")
+    result = source.get("result", "")
+    content = []
+    if image_data:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
+        })
+    content.append({
+        "type": "text",
+        "text": (
+            f"{tz_improve_prompt()}\n\n"
+            f"Исходный материал:\n{text.strip() if text.strip() else 'Материал был передан изображением.'}\n\n"
+            f"Последнее распознанное ТЗ:\n{result.strip() if result.strip() else 'ТЗ ещё не сформировано текстом.'}"
+        )
+    })
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2500,
+            system=TZ_SYSTEM,
+            messages=[{"role": "user", "content": content}]
+        )
+        answer = clean(msg.content[0].text.strip())
+        await send_long_message(context, chat_id, answer, reply_markup=kb_after_tz())
+    except Exception as e:
+        logger.error(f"gen_tz_improvements error: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Не получилось подготовить идеи по улучшению ТЗ. Попробуй ещё раз.",
+            reply_markup=kb_after_tz()
         )
 
 
@@ -875,18 +948,22 @@ async def handle_callback(update: Update, context) -> None:
         TZ_SOURCE[uid] = {}
         TZ_PENDING[uid] = {}
         await q.edit_message_text(
-            "✨ Улучшить ТЗ\n\n"
+            "🔎 Распознать ТЗ\n\n"
             "Пришли хаотичное описание, переписку, заметки или скрин. "
-            "Я выделю главное и соберу чистое техническое задание.",
+            "Я выделю главное и соберу понятное техническое задание.",
             reply_markup=kb_tz_input()
         )
+
+    elif d == "tz_improve":
+        await q.edit_message_text(random.choice(THINKING))
+        await gen_tz_improvements(uid, context, q.message.chat_id)
 
     elif d.startswith("tz_format_"):
         pending = TZ_PENDING.get(uid) or TZ_SOURCE.get(uid)
         if not pending:
             USER_MODE[uid] = "tz_wait_input"
             await q.edit_message_text(
-                "✨ Улучшить ТЗ\n\nПришли материал ещё раз, а потом выбери формат результата.",
+                "🔎 Распознать ТЗ\n\nПришли материал ещё раз, а потом выбери формат результата.",
                 reply_markup=kb_tz_input()
             )
             return
@@ -1240,7 +1317,7 @@ async def handle_voice(update: Update, context) -> None:
     mode = USER_MODE.get(uid, "")
     if mode != "tz_wait_input":
         await update.message.reply_text(
-            "Голосовое можно распознать в режиме «✨ Улучшить ТЗ».",
+            "Голосовое можно распознать в режиме «🔎 Распознать ТЗ».",
             reply_markup=kb_main()
         )
         return
