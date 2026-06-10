@@ -6,7 +6,7 @@ import random
 import logging
 import anthropic
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
@@ -318,9 +318,10 @@ async def start(update: Update, context) -> None:
     uid = update.effective_user.id
     if not is_allowed(uid):
         USER_MODE[uid] = "waiting_key"
-        await update.message.reply_text("Привет 👋\n\nВведите ключ доступа 🔑")
+        await update.message.reply_text("Привет 👋\n\nВведите ключ доступа 🔑", reply_markup=ReplyKeyboardRemove())
         return
     USER_MODE[uid] = ""
+    await update.message.reply_text("...", reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(WELCOME, reply_markup=kb_main())
 
 
