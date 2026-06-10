@@ -94,7 +94,6 @@ async def start(update: Update, context) -> None:
         return
     USER_MODE[user_id] = ""
     CONVERSATIONS[user_id] = []
-    await update.message.reply_photo(photo="https://i.postimg.cc/0NHyKKnG/Frame-3.png")
     await update.message.reply_text("Выбери что делаем 👇", reply_markup=get_main_keyboard())
 
 
@@ -173,12 +172,11 @@ async def _ask_next_design_question(query_or_message, user_id: int, context):
         return
 
     q = questions[step]
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(opt, callback_data=f"dq_{opt}") for opt in row]
-        for row in q["options"]
-    ])
+    rows = [[InlineKeyboardButton(opt, callback_data=f"dq_{opt}") for opt in row] for row in q["options"]]
+    rows.append([InlineKeyboardButton("Определи сам", callback_data="dq_auto")])
+    keyboard = InlineKeyboardMarkup(rows)
 
-    text = q["question"]
+    text = q["question"] + "\n\n(или напиши свой вариант)"
     if hasattr(query_or_message, 'edit_message_text'):
         await query_or_message.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -353,7 +351,15 @@ async def handle_message(update: Update, context) -> None:
         return
 
     if mode == "design_questions":
-        await update.message.reply_text("Используй кнопки для ответа 👆")
+        # Принимаем текстовый ответ как альтернативу кнопке
+        step = DESIGN_STEP.get(user_id, 0)
+        questions = DESIGN_QUESTIONS.get(user_id, [])
+        answers = DESIGN_ANSWERS.get(user_id, {})
+        if step < len(questions):
+            answers[questions[step]["question"]] = user_text
+            DESIGN_ANSWERS[user_id] = answers
+            DESIGN_STEP[user_id] = step + 1
+            await _ask_next_design_question(update.message, user_id, context)
         return
 
     if user_id not in CONVERSATIONS:
