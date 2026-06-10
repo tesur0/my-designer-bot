@@ -158,6 +158,75 @@ async def handle_callback(update: Update, context) -> None:
         )
 
 
+async def handle_photo(update: Update, context) -> None:
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        return
+
+    mode = USER_MODE.get(user_id, "")
+    if not mode:
+        await update.message.reply_text(
+            "Выбери что делаем 👇",
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    if user_id not in CONVERSATIONS:
+        CONVERSATIONS[user_id] = []
+
+    # Скачиваем фото и конвертируем в base64
+    import base64
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    file_bytes = await file.download_as_bytearray()
+    image_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
+
+    caption = update.message.caption or "Скрин переписки с клиентом"
+
+    # Формируем сообщение с картинкой
+    user_content = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": image_data
+            }
+        },
+        {
+            "type": "text",
+            "text": caption
+        }
+    ]
+
+    CONVERSATIONS[user_id].append({"role": "user", "content": user_content})
+    history = CONVERSATIONS[user_id][-10:]
+    system = BRIEF_SYSTEM if mode == "brief" else DESIGN_SYSTEM
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1000,
+            system=system,
+            messages=history
+        )
+        response = message.content[0].text
+        # Убираем markdown звёздочки
+        response = response.replace("**", "").replace("__", "")
+        CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
+
+        back_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("← Главное меню", callback_data="back_main")]
+        ])
+        await update.message.reply_text(response, reply_markup=back_keyboard)
+
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await update.message.reply_text("Что-то пошло не так, попробуй снова.")
+
+
 async def handle_message(update: Update, context) -> None:
     user_id = update.effective_user.id
 
@@ -194,6 +263,8 @@ async def handle_message(update: Update, context) -> None:
             messages=history
         )
         response = message.content[0].text
+        # Убираем markdown звёздочки
+        response = response.replace("**", "").replace("__", "")
         CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
 
         back_keyboard = InlineKeyboardMarkup([
@@ -216,6 +287,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("register", register))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Личный ассистент запущен!")
