@@ -248,29 +248,93 @@ def kb_volume():
     ])
 
 
-def admin_summary(data):
+def admin_stats(data):
     users = data.get("users", {})
     keys = data.get("keys", {})
     active_users = sum(1 for info in users.values() if info.get("active"))
+    blocked_users = len(users) - active_users
     unused_keys = sum(1 for key in keys.values() if not key.get("used"))
+    used_keys = len(keys) - unused_keys
 
+    return {
+        "users": len(users),
+        "active_users": active_users,
+        "blocked_users": blocked_users,
+        "keys": len(keys),
+        "unused_keys": unused_keys,
+        "used_keys": used_keys,
+    }
+
+
+def admin_home_text(data):
+    stats = admin_stats(data)
     return (
-        "🔧  Панель управления\n\n"
-        f"Пользователи: {len(users)} всего, {active_users} активных\n"
-        f"Свободные ключи: {unused_keys}"
+        "🔧  Админ-панель\n\n"
+        "Выбери раздел ниже.\n\n"
+        f"👥 Пользователи: {stats['users']}\n"
+        f"✅ Активные: {stats['active_users']}\n"
+        f"⛔ Отключены: {stats['blocked_users']}\n\n"
+        f"🔑 Ключи: {stats['keys']}\n"
+        f"🟢 Свободные: {stats['unused_keys']}\n"
+        f"⚪ Использованные: {stats['used_keys']}"
     )
 
 
-def active_keys_text(data):
-    keys = [f"`{k}`" for k, v in data.get("keys", {}).items() if not v.get("used")]
-    return "\n".join(keys) if keys else "нет активных ключей"
+def admin_users_text(data, page=0):
+    users = sorted(
+        data.get("users", {}).items(),
+        key=lambda item: item[1].get("name", item[0]).lower()
+    )
+    total_pages = max(1, (len(users) + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    if not users:
+        return "👥  Пользователи\n\nПока никто не активировал ключ."
+
+    start = page * ADMIN_USERS_PER_PAGE
+    visible_users = users[start:start + ADMIN_USERS_PER_PAGE]
+    lines = [
+        "👥  Пользователи",
+        f"Страница {page + 1}/{total_pages}",
+        "",
+    ]
+
+    for index, (uid, info) in enumerate(visible_users, start + 1):
+        icon = "✅" if info.get("active") else "⛔"
+        name = info.get("name", uid)
+        lines.append(f"{index}. {icon} {name} — {uid}")
+
+    return "\n".join(lines)
 
 
-def admin_text(data):
-    return f"{admin_summary(data)}\n\nАктивные ключи:\n{active_keys_text(data)}"
+def admin_keys_text(data):
+    keys = [k for k, v in data.get("keys", {}).items() if not v.get("used")]
+    stats = admin_stats(data)
+
+    if not keys:
+        keys_text = "нет свободных ключей"
+    else:
+        keys_text = "\n".join(f"`{key}`" for key in keys[-20:])
+        if len(keys) > 20:
+            keys_text += f"\n\nПоказаны последние 20 из {len(keys)} свободных ключей."
+
+    return (
+        "🔑  Ключи доступа\n\n"
+        f"Свободные: {stats['unused_keys']}\n"
+        f"Использованные: {stats['used_keys']}\n\n"
+        f"{keys_text}"
+    )
 
 
-def kb_admin(data, page=0):
+def kb_admin_home():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥  Пользователи", callback_data="admin_users_0")],
+        [InlineKeyboardButton("🔑  Ключи доступа", callback_data="admin_keys")],
+        [InlineKeyboardButton("🔄  Обновить", callback_data="admin_home")],
+    ])
+
+
+def kb_admin_users(data, page=0):
     rows = []
     users = sorted(
         data.get("users", {}).items(),
@@ -287,23 +351,37 @@ def kb_admin(data, page=0):
         label = "Отключить" if info.get("active") else "Включить"
         rows.append([
             InlineKeyboardButton(f"{icon}  {name}", callback_data="noop"),
-            InlineKeyboardButton(label, callback_data=f"toggle_{page}_{uid}")
+            InlineKeyboardButton(label, callback_data=f"admin_toggle_{page}_{uid}")
         ])
 
     if total_pages > 1:
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton("←", callback_data=f"admin_page_{page - 1}"))
+            nav.append(InlineKeyboardButton("←", callback_data=f"admin_users_{page - 1}"))
         nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("→", callback_data=f"admin_page_{page + 1}"))
+            nav.append(InlineKeyboardButton("→", callback_data=f"admin_users_{page + 1}"))
         rows.append(nav)
 
     rows.append([
-        InlineKeyboardButton("➕  1 ключ", callback_data=f"gen_key_{page}"),
-        InlineKeyboardButton("➕  5 ключей", callback_data=f"gen_keys_5_{page}")
+        InlineKeyboardButton("🔑  Ключи", callback_data="admin_keys"),
+        InlineKeyboardButton("←  Меню", callback_data="admin_home")
     ])
     return InlineKeyboardMarkup(rows)
+
+
+def kb_admin_keys():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕  1", callback_data="admin_gen_keys_1"),
+            InlineKeyboardButton("➕  5", callback_data="admin_gen_keys_5"),
+            InlineKeyboardButton("➕  10", callback_data="admin_gen_keys_10"),
+        ],
+        [
+            InlineKeyboardButton("👥  Пользователи", callback_data="admin_users_0"),
+            InlineKeyboardButton("←  Меню", callback_data="admin_home"),
+        ],
+    ])
 
 
 # ── AI helpers ────────────────────────────────────────────────────────────────
@@ -454,8 +532,8 @@ async def admin_cmd(update: Update, context) -> None:
         return
     data = load_data()
     await update.message.reply_text(
-        admin_text(data),
-        reply_markup=kb_admin(data), parse_mode="Markdown"
+        admin_home_text(data),
+        reply_markup=kb_admin_home()
     )
 
 
@@ -477,16 +555,35 @@ async def handle_callback(update: Update, context) -> None:
         return
 
     # Admin actions
-    if d.startswith("gen_key") and is_owner(uid):
+    if d == "admin_home" and is_owner(uid):
         data = load_data()
-        page = 0
-        count = 1
+        await q.edit_message_text(
+            admin_home_text(data),
+            reply_markup=kb_admin_home()
+        )
+        return
 
-        if d.startswith("gen_keys_5_"):
-            count = 5
-            page = int(d[11:])
-        elif d.startswith("gen_key_"):
-            page = int(d[8:])
+    if d.startswith("admin_users_") and is_owner(uid):
+        page = int(d[12:])
+        data = load_data()
+        await q.edit_message_text(
+            admin_users_text(data, page),
+            reply_markup=kb_admin_users(data, page)
+        )
+        return
+
+    if d == "admin_keys" and is_owner(uid):
+        data = load_data()
+        await q.edit_message_text(
+            admin_keys_text(data),
+            reply_markup=kb_admin_keys(), parse_mode="Markdown"
+        )
+        return
+
+    if d.startswith("admin_gen_keys_") and is_owner(uid):
+        data = load_data()
+        data.setdefault("keys", {})
+        count = int(d[15:])
 
         keys = []
         for _ in range(count):
@@ -500,40 +597,25 @@ async def handle_callback(update: Update, context) -> None:
         keys_text = "\n".join(f"`{key}`" for key in keys)
         await q.edit_message_text(
             f"✅  Создано ключей: {count}\n\n{keys_text}\n\nОтправь пользователям.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data=f"back_admin_{page}")]]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔑  Все ключи", callback_data="admin_keys")],
+                [InlineKeyboardButton("←  Меню", callback_data="admin_home")]
+            ]),
             parse_mode="Markdown"
         )
         return
 
-    if d.startswith("toggle_") and is_owner(uid):
-        parts = d.split("_", 2)
-        page = int(parts[1]) if len(parts) > 2 else 0
-        target_uid = parts[2] if len(parts) > 2 else d[7:]
+    if d.startswith("admin_toggle_") and is_owner(uid):
+        parts = d.split("_", 3)
+        page = int(parts[2])
+        target_uid = parts[3]
         data = load_data()
         if target_uid in data["users"]:
             data["users"][target_uid]["active"] = not data["users"][target_uid].get("active", True)
             save_data(data)
         await q.edit_message_text(
-            admin_text(data),
-            reply_markup=kb_admin(data, page), parse_mode="Markdown"
-        )
-        return
-
-    if d.startswith("admin_page_") and is_owner(uid):
-        page = int(d[11:])
-        data = load_data()
-        await q.edit_message_text(
-            admin_text(data),
-            reply_markup=kb_admin(data, page), parse_mode="Markdown"
-        )
-        return
-
-    if d.startswith("back_admin") and is_owner(uid):
-        page = int(d[11:]) if d.startswith("back_admin_") else 0
-        data = load_data()
-        await q.edit_message_text(
-            admin_text(data),
-            reply_markup=kb_admin(data, page), parse_mode="Markdown"
+            admin_users_text(data, page),
+            reply_markup=kb_admin_users(data, page)
         )
         return
 
