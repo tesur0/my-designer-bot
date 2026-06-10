@@ -26,6 +26,7 @@ DESIGN_IMAGE: dict[int, str] = {}
 DESIGN_ANSWERS: dict[int, dict] = {}
 DESIGN_QUESTIONS: dict[int, list] = {}
 DESIGN_STEP: dict[int, int] = {}
+DESIGN_VARIANTS: dict[int, list] = {}  # 3 варианта аргументации
 
 THINKING_PHRASES = [
     "Анализирую...",
@@ -114,6 +115,17 @@ def get_back_keyboard():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("← Главное меню", callback_data="back_main")
     ]])
+
+
+def get_variants_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("1", callback_data="pick_0"),
+            InlineKeyboardButton("2", callback_data="pick_1"),
+            InlineKeyboardButton("3", callback_data="pick_2"),
+        ],
+        [InlineKeyboardButton("🔄 Обновить варианты", callback_data="refresh_variants")]
+    ])
 
 
 def get_volume_keyboard():
@@ -290,6 +302,16 @@ async def handle_callback(update: Update, context) -> None:
         await query.edit_message_text(random.choice(THINKING_PHRASES))
         await _generate_argumentation(user_id, context, query.message.chat_id)
 
+    elif data_str.startswith("pick_"):
+        idx = int(data_str.replace("pick_", ""))
+        variants = DESIGN_VARIANTS.get(user_id, [])
+        if idx < len(variants):
+            await query.edit_message_text(variants[idx], reply_markup=get_back_keyboard())
+
+    elif data_str == "refresh_variants":
+        await query.edit_message_text(random.choice(THINKING_PHRASES))
+        await _generate_argumentation(user_id, context, query.message.chat_id, refresh=True)
+
 
 async def _ask_next_design_question(query_or_message, user_id: int, context):
     step = DESIGN_STEP.get(user_id, 0)
@@ -306,7 +328,7 @@ async def _ask_next_design_question(query_or_message, user_id: int, context):
 
     q = questions[step]
     rows = [[InlineKeyboardButton(opt, callback_data=f"dq_{opt}") for opt in row] for row in q["options"]]
-    rows.append([InlineKeyboardButton("Определи сам", callback_data="dq_auto")])
+    rows.append([InlineKeyboardButton("🎯 Определи сам", callback_data="dq_auto")])
     keyboard = InlineKeyboardMarkup(rows)
     text = q["question"] + "\n\n(или напиши свой вариант)"
 
@@ -316,7 +338,7 @@ async def _ask_next_design_question(query_or_message, user_id: int, context):
         await context.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard)
 
 
-async def _generate_argumentation(user_id: int, context, chat_id: int):
+async def _generate_argumentation(user_id: int, context, chat_id: int, refresh: bool = False):
     image_data = DESIGN_IMAGE.get(user_id, "")
     answers = DESIGN_ANSWERS.get(user_id, {})
     volume = answers.get("volume", "коротко")
@@ -325,21 +347,41 @@ async def _generate_argumentation(user_id: int, context, chat_id: int):
     system = f"""Ты пишешь аргументацию к дизайну от лица дизайнера для клиента.
 Объём: {volume}.
 Контекст: {answers_text}
+
+Сгенерируй РОВНО 3 разных варианта аргументации. Каждый должен отличаться по подаче и акцентам.
+Верни ТОЛЬКО JSON без markdown:
+["вариант 1", "вариант 2", "вариант 3"]
+
 """ + ARTEM_STYLE
 
+    seed = f"вариация {random.randint(1000,9999)}" if refresh else "основная генерация"
     messages = [{
         "role": "user",
         "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
-            {"type": "text", "text": f"Напиши аргументацию. Объём: {volume}. Контекст:\n{answers_text}"}
+            {"type": "text", "text": f"Напиши 3 варианта. Объём: {volume}. Контекст:\n{answers_text}\n{seed}"}
         ]
     }]
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(model="claude-sonnet-4-5", max_tokens=1000, system=system, messages=messages)
-        response = clean_text(message.content[0].text)
-        await context.bot.send_message(chat_id=chat_id, text=response, reply_markup=get_back_keyboard())
+        message = client.messages.create(model="claude-sonnet-4-5", max_tokens=2000, system=system, messages=messages)
+        raw = re.sub(r'```json|```', '', message.content[0].text.strip()).strip()
+        variants = json.loads(raw)
+        variants = [clean_text(v) for v in variants]
+        DESIGN_VARIANTS[user_id] = variants
+
+        preview = ""
+        for i, v in enumerate(variants, 1):
+            short = v[:120] + "..." if len(v) > 120 else v
+            preview += f"*{i}.*\n{short}\n\n"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Готово, вот 3 варианта:\n\n{preview}Выбери или обнови:",
+            reply_markup=get_variants_keyboard(),
+            parse_mode="Markdown"
+        )
     except Exception as e:
         logger.error(f"Error: {e}")
         await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.")
