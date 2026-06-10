@@ -30,6 +30,7 @@ BRIEF_ANSWERS: dict[int, dict] = {}
 BRIEF_STEP: dict[int, int] = {}
 BRIEF_VARIANTS: dict[int, list] = {}
 TZ_SOURCE: dict[int, dict] = {}
+TZ_PENDING: dict[int, dict] = {}
 
 THINKING = [
     "⏳ Анализирую контекст...",
@@ -58,38 +59,6 @@ TZ_SYSTEM = """Ты — профессиональный проектный ме
 Нужно выделить главное, убрать мусор, объединить повторяющиеся мысли и привести всё к понятной структуре.
 Всегда анализируй материал как опытный менеджер проекта.
 
-Сформируй результат строго по этой структуре:
-
-# Проект
-Кратко опиши, что именно требуется сделать.
-
-# Основная задача
-Опиши главную цель клиента простым и понятным языком.
-
-# Что необходимо выполнить
-Составь список конкретных задач.
-
-# Важные пожелания клиента
-Выпиши все пожелания, требования и ограничения.
-
-# Визуальное направление
-Определи стиль, настроение, ассоциации и желаемое впечатление от результата.
-
-# Материалы от клиента
-Перечисли всё, что клиент уже предоставил.
-
-# Чего не хватает
-Определи, какой информации недостаточно для полноценной работы.
-
-# Вопросы для уточнения
-Составь список вопросов, которые необходимо задать клиенту.
-
-# Потенциальные риски
-Укажи противоречия, неопределенности и моменты, которые могут вызвать проблемы в работе.
-
-# Итоговое ТЗ
-Собери финальное чистое техническое задание в профессиональном виде, готовое для передачи дизайнеру или исполнителю.
-
 Правила:
 - Не теряй важные детали.
 - Не добавляй информацию от себя.
@@ -99,7 +68,9 @@ TZ_SYSTEM = """Ты — профессиональный проектный ме
 - Пиши кратко, структурированно и без воды.
 - Результат должен выглядеть так, будто его подготовил сильный project manager.
 - Не используй markdown-таблицы.
-- Не используй звёздочки для выделения."""
+- Не используй markdown-заголовки с символом #.
+- Не используй звёздочки для выделения.
+- Используй аккуратные эмодзи в заголовках разделов, чтобы результат выглядел живее в Telegram."""
 
 TONES = {
     "my": {
@@ -374,9 +345,20 @@ def kb_tz_input():
     ])
 
 
+def kb_tz_format():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Краткая выжимка", callback_data="tz_format_short")],
+        [InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
+        [InlineKeyboardButton("← Отправить другой материал", callback_data="mode_tz")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
 def kb_after_tz():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✨ Улучшить ещё", callback_data="mode_tz")],
+        [InlineKeyboardButton("📝 Кратко", callback_data="tz_format_short"),
+         InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
@@ -593,7 +575,69 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
         )
 
 
-async def gen_tz(user_id, context, chat_id, text="", image_data=""):
+def tz_format_prompt(format_type):
+    if format_type == "short":
+        return """Сделай краткую выжимку. Не делай полноценное ТЗ.
+
+Формат строго такой:
+
+📝 Краткая выжимка
+
+🎯 Что хочет клиент
+1-2 короткие строки: что нужно сделать.
+
+📦 Пока что имеем
+Короткий список материалов, вводных и готовых элементов. Например: заголовок, CTA, референс, компания, продукт.
+
+✅ Что нужно сделать
+3-6 конкретных задач.
+
+🎨 Визуально
+Коротко: стиль, настроение, референсы, ассоциации.
+
+❓ Что уточнить
+Только самые важные вопросы.
+
+Пиши очень кратко. Без воды. Без символа #."""
+
+    return """Сделай подробное структурированное ТЗ.
+
+Формат строго такой:
+
+📌 Проект
+Кратко опиши, что именно требуется сделать.
+
+🎯 Основная задача
+Опиши главную цель клиента простым и понятным языком.
+
+✅ Что необходимо выполнить
+Составь список конкретных задач.
+
+💬 Важные пожелания клиента
+Выпиши все пожелания, требования и ограничения.
+
+🎨 Визуальное направление
+Определи стиль, настроение, ассоциации и желаемое впечатление от результата.
+
+📎 Материалы от клиента
+Перечисли всё, что клиент уже предоставил.
+
+🧩 Чего не хватает
+Определи, какой информации недостаточно для полноценной работы.
+
+❓ Вопросы для уточнения
+Составь список вопросов, которые необходимо задать клиенту.
+
+⚠️ Потенциальные риски
+Укажи противоречия, неопределенности и моменты, которые могут вызвать проблемы в работе.
+
+📄 Итоговое ТЗ
+Собери финальное чистое техническое задание в профессиональном виде, готовое для передачи дизайнеру или исполнителю.
+
+Пиши структурированно, но без лишнего текста. Без символа #."""
+
+
+async def gen_tz(user_id, context, chat_id, text="", image_data="", format_type="full"):
     content = []
     if image_data:
         content.append({
@@ -603,7 +647,8 @@ async def gen_tz(user_id, context, chat_id, text="", image_data=""):
     content.append({
         "type": "text",
         "text": (
-            "Проанализируй материал и подготовь структурированное ТЗ.\n\n"
+            f"{tz_format_prompt(format_type)}\n\n"
+            "Проанализируй материал и подготовь результат в выбранном формате.\n\n"
             f"Материал пользователя:\n{text.strip() if text.strip() else 'Материал передан изображением.'}"
         )
     })
@@ -617,7 +662,9 @@ async def gen_tz(user_id, context, chat_id, text="", image_data=""):
             messages=[{"role": "user", "content": content}]
         )
         result = clean(msg.content[0].text.strip())
-        TZ_SOURCE[user_id] = {"text": text, "image": image_data}
+        TZ_SOURCE[user_id] = {"text": text, "image": image_data, "format": format_type}
+        TZ_PENDING[user_id] = {"text": text, "image": image_data}
+        USER_MODE[user_id] = ""
         await send_long_message(context, chat_id, result, reply_markup=kb_after_tz())
     except Exception as e:
         logger.error(f"gen_tz error: {e}")
@@ -826,11 +873,33 @@ async def handle_callback(update: Update, context) -> None:
     elif d == "mode_tz":
         USER_MODE[uid] = "tz_wait_input"
         TZ_SOURCE[uid] = {}
+        TZ_PENDING[uid] = {}
         await q.edit_message_text(
             "✨ Улучшить ТЗ\n\n"
             "Пришли хаотичное описание, переписку, заметки или скрин. "
             "Я выделю главное и соберу чистое техническое задание.",
             reply_markup=kb_tz_input()
+        )
+
+    elif d.startswith("tz_format_"):
+        pending = TZ_PENDING.get(uid) or TZ_SOURCE.get(uid)
+        if not pending:
+            USER_MODE[uid] = "tz_wait_input"
+            await q.edit_message_text(
+                "✨ Улучшить ТЗ\n\nПришли материал ещё раз, а потом выбери формат результата.",
+                reply_markup=kb_tz_input()
+            )
+            return
+
+        format_type = "short" if d == "tz_format_short" else "full"
+        await q.edit_message_text(random.choice(THINKING))
+        await gen_tz(
+            uid,
+            context,
+            q.message.chat_id,
+            text=pending.get("text", ""),
+            image_data=pending.get("image", ""),
+            format_type=format_type
         )
 
     elif d == "bq_back":
@@ -1007,19 +1076,18 @@ async def handle_photo(update: Update, context) -> None:
     mode = USER_MODE.get(uid, "")
 
     if mode == "tz_wait_input":
-        thinking_msg = await update.message.reply_text(random.choice(THINKING))
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         file_bytes = await file.download_as_bytearray()
         img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
         caption = update.message.caption or ""
 
-        USER_MODE[uid] = ""
-        await gen_tz(uid, context, update.message.chat_id, text=caption, image_data=img_data)
-        try:
-            await thinking_msg.delete()
-        except Exception:
-            pass
+        TZ_PENDING[uid] = {"text": caption, "image": img_data}
+        USER_MODE[uid] = "tz_choose_format"
+        await update.message.reply_text(
+            "Материал получил.\n\nКак подготовить результат?",
+            reply_markup=kb_tz_format()
+        )
         return
 
     if mode != "design_wait_photo":
@@ -1106,13 +1174,19 @@ async def handle_message(update: Update, context) -> None:
         return
 
     if mode == "tz_wait_input":
-        thinking_msg = await update.message.reply_text(random.choice(THINKING))
-        USER_MODE[uid] = ""
-        await gen_tz(uid, context, update.message.chat_id, text=text)
-        try:
-            await thinking_msg.delete()
-        except Exception:
-            pass
+        TZ_PENDING[uid] = {"text": text, "image": ""}
+        USER_MODE[uid] = "tz_choose_format"
+        await update.message.reply_text(
+            "Материал получил.\n\nКак подготовить результат?",
+            reply_markup=kb_tz_format()
+        )
+        return
+
+    if mode == "tz_choose_format":
+        await update.message.reply_text(
+            "Выбери формат кнопкой ниже.",
+            reply_markup=kb_tz_format()
+        )
         return
 
     if mode == "design_q":
@@ -1178,12 +1252,11 @@ async def handle_voice(update: Update, context) -> None:
         if not transcript:
             raise RuntimeError("Empty transcript")
 
-        USER_MODE[uid] = ""
-        await gen_tz(
-            uid,
-            context,
-            update.message.chat_id,
-            text=f"Расшифровка голосового сообщения:\n{transcript}"
+        TZ_PENDING[uid] = {"text": f"Расшифровка голосового сообщения:\n{transcript}", "image": ""}
+        USER_MODE[uid] = "tz_choose_format"
+        await update.message.reply_text(
+            "Голосовое распознал.\n\nКак подготовить результат?",
+            reply_markup=kb_tz_format()
         )
     except RuntimeError as e:
         logger.error(f"voice_transcribe config error: {e}")
