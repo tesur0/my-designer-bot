@@ -153,7 +153,7 @@ def get_bottom_keyboard():
             [KeyboardButton("🗑 Очистить")]
         ],
         resize_keyboard=True,
-        persistent=True
+        is_persistent=True
     )
 
 
