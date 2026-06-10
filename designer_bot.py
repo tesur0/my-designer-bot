@@ -64,10 +64,10 @@ def clean_text(text: str) -> str:
 
 
 def get_main_keyboard():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief"),
-        InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief")],
+        [InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")]
+    ])
 
 
 def get_back_keyboard():
@@ -94,8 +94,8 @@ async def start(update: Update, context) -> None:
         return
     USER_MODE[user_id] = ""
     CONVERSATIONS[user_id] = []
-    await update.message.reply_photo(
-        photo="https://i.ibb.co/VY7CY8mF/Frame-3.png",
+    await update.message.reply_document(
+        document="https://i.ibb.co/VY7CY8mF/Frame-3.png",
         caption="Выбери что делаем 👇",
         reply_markup=get_main_keyboard()
     )
