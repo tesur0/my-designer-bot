@@ -165,6 +165,7 @@ def kb_brief_variants():
 def kb_brief_q(opts):
     rows = [[InlineKeyboardButton(o, callback_data=f"bq_{o}") for o in row] for row in opts]
     rows.append([InlineKeyboardButton("✍️  Опишу сам", callback_data="bq_custom")])
+    rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="bq_skip_all")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -280,6 +281,7 @@ async def ask_design_q(target, user_id, context):
     q = qs[step]
     rows = [[InlineKeyboardButton(o, callback_data=f"dq_{o}") for o in row] for row in q["options"]]
     rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
+    rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="dq_skip_all")])
     kb = InlineKeyboardMarkup(rows)
     text = q["question"] + "\n\n(или напиши свой вариант)"
 
@@ -408,7 +410,10 @@ async def handle_callback(update: Update, context) -> None:
     # Brief questions
     elif d.startswith("bq_"):
         answer = d[3:]
-        if answer == "custom":
+        if answer == "skip_all":
+            await q.edit_message_text(random.choice(THINKING))
+            await gen_brief_variants(uid, context, q.message.chat_id)
+        elif answer == "custom":
             USER_MODE[uid] = "brief_custom"
             step = BRIEF_STEP.get(uid, 0)
             hint = BRIEF_QS[step]["q"] if step < len(BRIEF_QS) else "Опиши:"
@@ -445,14 +450,18 @@ async def handle_callback(update: Update, context) -> None:
     # Design questions
     elif d.startswith("dq_"):
         answer = d[3:]
-        step = DESIGN_STEP.get(uid, 0)
-        qs = DESIGN_QUESTIONS.get(uid, [])
-        ans = DESIGN_ANSWERS.get(uid, {})
-        if step < len(qs):
-            ans[qs[step]["question"]] = answer
-            DESIGN_ANSWERS[uid] = ans
-            DESIGN_STEP[uid] = step + 1
-            await ask_design_q(q, uid, context)
+        if answer == "skip_all":
+            # Пропускаем все вопросы и сразу к объёму
+            await q.edit_message_text("📐  Какой объём аргументации?", reply_markup=kb_volume())
+        else:
+            step = DESIGN_STEP.get(uid, 0)
+            qs = DESIGN_QUESTIONS.get(uid, [])
+            ans = DESIGN_ANSWERS.get(uid, {})
+            if step < len(qs):
+                ans[qs[step]["question"]] = answer
+                DESIGN_ANSWERS[uid] = ans
+                DESIGN_STEP[uid] = step + 1
+                await ask_design_q(q, uid, context)
 
     elif d == "vol_short":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "коротко (3–5 строк)"
@@ -508,10 +517,16 @@ async def handle_photo(update: Update, context) -> None:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
             model="claude-sonnet-4-5", max_tokens=500,
-            system='Анализируй дизайн и задай 2-3 вопроса только про стиль, цель и целевую аудиторию. Не спрашивай про технические детали, даты, текст на картинке или конкретные элементы макета. Верни ТОЛЬКО JSON без markdown: [{"question":"?","options":[["A","B"]]}]',
+            system="""Ты помогаешь дизайнеру аргументировать работу клиенту.
+Посмотри на дизайн и задай 2 вопроса которые помогут написать убедительную аргументацию.
+Вопросы должны быть про: цель дизайна, целевую аудиторию, стиль, настроение, контекст использования.
+НЕ спрашивай про: технические детали, текст на картинке, даты, цифры, названия.
+Варианты ответов должны быть короткими (2-4 слова) и релевантными.
+Верни ТОЛЬКО JSON без markdown и пояснений:
+[{"question":"Вопрос?","options":[["Вариант А","Вариант Б"],["Вариант В"]]}]""",
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_data}},
-                {"type": "text", "text": "Задай вопросы про стиль, цель и аудиторию."}
+                {"type": "text", "text": "Задай 2 вопроса для аргументации этого дизайна."}
             ]}]
         )
         raw = re.sub(r'```json|```', '', msg.content[0].text.strip()).strip()
