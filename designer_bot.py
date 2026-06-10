@@ -94,9 +94,40 @@ def get_main_keyboard():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief"),
-            InlineKeyboardButton("🎨 Защитить дизайн", callback_data="mode_design")
+            InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")
         ]
     ])
+
+
+def get_design_type_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Креатив", callback_data="dt_creative"),
+            InlineKeyboardButton("Презентация", callback_data="dt_presentation")
+        ],
+        [
+            InlineKeyboardButton("Логотип", callback_data="dt_logo"),
+            InlineKeyboardButton("Брендинг", callback_data="dt_branding")
+        ],
+        [InlineKeyboardButton("Другое", callback_data="dt_other")]
+    ])
+
+
+def get_design_goal_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Продажи", callback_data="dg_sales"),
+            InlineKeyboardButton("Доверие", callback_data="dg_trust")
+        ],
+        [
+            InlineKeyboardButton("Узнаваемость", callback_data="dg_brand"),
+            InlineKeyboardButton("Вовлечённость", callback_data="dg_engage")
+        ]
+    ])
+
+
+# Хранилище данных для аргументации
+DESIGN_FLOW: dict[int, dict] = {}
 
 
 def is_owner(user_id: int) -> bool:
@@ -148,8 +179,43 @@ async def handle_callback(update: Update, context) -> None:
     elif data == "mode_design":
         USER_MODE[user_id] = "design"
         CONVERSATIONS[user_id] = []
+        DESIGN_FLOW[user_id] = {}
         await query.edit_message_text(
-            "Окей, напишем аргументацию к дизайну.\n\nЧто за проект?"
+            "Что за проект?",
+            reply_markup=get_design_type_keyboard()
+        )
+
+    elif data.startswith("dt_"):
+        types = {
+            "dt_creative": "Креатив",
+            "dt_presentation": "Презентация",
+            "dt_logo": "Логотип",
+            "dt_branding": "Брендинг",
+            "dt_other": "Другое"
+        }
+        DESIGN_FLOW.setdefault(user_id, {})["type"] = types.get(data, "Проект")
+        await query.edit_message_text(
+            f"Тип: {types.get(data)} ✓\n\nКакая главная цель дизайна?",
+            reply_markup=get_design_goal_keyboard()
+        )
+
+    elif data.startswith("dg_"):
+        goals = {
+            "dg_sales": "Продажи",
+            "dg_trust": "Доверие",
+            "dg_brand": "Узнаваемость",
+            "dg_engage": "Вовлечённость"
+        }
+        DESIGN_FLOW.setdefault(user_id, {})["goal"] = goals.get(data, "")
+        proj_type = DESIGN_FLOW.get(user_id, {}).get("type", "")
+        goal = goals.get(data, "")
+        # Записываем в историю и просим описать дизайн
+        CONVERSATIONS[user_id] = [
+            {"role": "user", "content": f"Тип проекта: {proj_type}. Цель: {goal}."},
+            {"role": "assistant", "content": f"Понял — {proj_type}, цель: {goal.lower()}.\n\nОпиши что сделал: цвета, шрифты, композицию, ключевые решения."}
+        ]
+        await query.edit_message_text(
+            f"Тип: {proj_type} ✓\nЦель: {goal} ✓\n\nОпиши что сделал — цвета, шрифты, композицию, ключевые решения."
         )
 
     elif data == "back_main":
@@ -218,6 +284,8 @@ async def handle_photo(update: Update, context) -> None:
         response = message.content[0].text
         # Убираем markdown звёздочки
         response = response.replace("**", "").replace("__", "")
+        import re
+        response = re.sub(r"(?<=\w)-(?=\w)", "2014", response)
         CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
 
         back_keyboard = InlineKeyboardMarkup([
@@ -268,6 +336,8 @@ async def handle_message(update: Update, context) -> None:
         response = message.content[0].text
         # Убираем markdown звёздочки
         response = response.replace("**", "").replace("__", "")
+        import re
+        response = re.sub(r"(?<=\w)-(?=\w)", "2014", response)
         CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
 
         back_keyboard = InlineKeyboardMarkup([
