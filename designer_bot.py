@@ -22,7 +22,17 @@ TELEGRAM_TOKEN = (
     or "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 )
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+ANTHROPIC_FALLBACK_MODELS = [
+    model.strip()
+    for model in [
+        ANTHROPIC_MODEL,
+        "claude-sonnet-4-5",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-haiku-latest",
+    ]
+    if model.strip()
+]
 
 MAX_HISTORY_MESSAGES = 20
 PHOTO_BATCH_DELAY = 5
@@ -205,21 +215,26 @@ async def call_claude(system: str, user_content, max_tokens: int = 2500) -> str:
     if not client:
         return "ANTHROPIC_API_KEY не задан. Добавь ключ в переменные окружения Railway."
 
-    for attempt in range(3):
-        try:
-            response = await asyncio.to_thread(
-                client.messages.create,
-                model=ANTHROPIC_MODEL,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": user_content}],
-            )
-            return clean(response.content[0].text)
-        except Exception as exc:
-            logger.error("Claude error, attempt %s: %s", attempt + 1, exc)
-            if attempt == 2:
-                return "Сервис временно недоступен, попробуй через минуту."
-            await asyncio.sleep(0.8 * (2 ** attempt))
+    models = list(dict.fromkeys(ANTHROPIC_FALLBACK_MODELS))
+    for model in models:
+        for attempt in range(3):
+            try:
+                response = await asyncio.to_thread(
+                    client.messages.create,
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": user_content}],
+                )
+                return clean(response.content[0].text)
+            except Exception as exc:
+                error_text = str(exc).lower()
+                logger.error("Claude error, model %s, attempt %s: %s", model, attempt + 1, exc)
+                if "not_found_error" in error_text or "404" in error_text:
+                    break
+                if attempt == 2:
+                    break
+                await asyncio.sleep(0.8 * (2 ** attempt))
 
     return "Сервис временно недоступен, попробуй через минуту."
 
