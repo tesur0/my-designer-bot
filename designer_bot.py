@@ -691,16 +691,6 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
 
 
 async def gen_push_client_variants(user_id, context, chat_id, refresh=False):
-    if not OPENAI_API_KEY:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Для этого инструмента нужен OPENAI_API_KEY в Railway Variables.",
-            reply_markup=kb_back_main()
-        )
-        return
-
-    from openai import OpenAI
-
     img = PUSH_IMAGE.get(user_id, "")
     if not img:
         await context.bot.send_message(
@@ -721,28 +711,26 @@ async def gen_push_client_variants(user_id, context, chat_id, refresh=False):
 ["вариант 1", "вариант 2", "вариант 3"]"""
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        msg = client.chat.completions.create(
-            model=OPENAI_TEXT_MODEL,
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-sonnet-4-5",
             max_tokens=1200,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Проанализируй скрин переписки и напиши 3 варианта сообщения, "
-                            f"чтобы мягко возобновить диалог. {seed}"
-                        )
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img}"}
-                    }
-                ]}
-            ]
+            system=system,
+            messages=[{"role": "user", "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": img}
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Проанализируй скрин переписки и напиши 3 варианта сообщения, "
+                        f"чтобы мягко возобновить диалог. {seed}"
+                    )
+                }
+            ]}]
         )
-        variants = parse_three_variants(msg.choices[0].message.content)
+        variants = parse_three_variants(msg.content[0].text)
         PUSH_VARIANTS[user_id] = variants
 
         text = ""
