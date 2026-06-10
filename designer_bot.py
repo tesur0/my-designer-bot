@@ -213,14 +213,20 @@ def kb_brief_variants():
 
 
 def kb_brief_q(opts):
-    rows = [[InlineKeyboardButton(o, callback_data=f"bq_{o}") for o in row] for row in opts]
+    rows = []
+    for row in opts:
+        for option in row:
+            rows.append([InlineKeyboardButton(option, callback_data=f"bq_{option}")])
     rows.append([InlineKeyboardButton("✍️  Опишу сам", callback_data="bq_custom")])
     rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="bq_skip_all")])
     return InlineKeyboardMarkup(rows)
 
 
 def kb_design_q(opts):
-    rows = [[InlineKeyboardButton(o, callback_data=f"dq_{o}") for o in row] for row in opts]
+    rows = []
+    for row in opts:
+        for option in row:
+            rows.append([InlineKeyboardButton(option, callback_data=f"dq_{option}")])
     rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
     return InlineKeyboardMarkup(rows)
 
@@ -346,11 +352,9 @@ async def ask_design_q(target, user_id, context):
     rows = []
     idx = 0
     for row in q["options"]:
-        btn_row = []
         for opt in row:
-            btn_row.append(InlineKeyboardButton(opt, callback_data=f"dqi_{idx}"))
+            rows.append([InlineKeyboardButton(opt, callback_data=f"dqi_{idx}")])
             idx += 1
-        rows.append(btn_row)
     rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
     rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="dq_skip_all")])
     kb = InlineKeyboardMarkup(rows)
