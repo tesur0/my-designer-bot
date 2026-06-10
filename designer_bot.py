@@ -37,10 +37,11 @@ THINKING = [
 ]
 
 WELCOME = (
-    "Главное меню\n\n"
-    "Выбери, что нужно подготовить сейчас.\n\n"
-    "💬 Ответ клиенту - быстро собрать сообщение по ситуации.\n"
-    "🎨 Аргументация дизайна - объяснить решение по скрину."
+    "✦ Привет!\n\n"
+    "Я помогаю работать с клиентами быстрее.\n\n"
+    "💬 Составлю ответ на любую ситуацию\n"
+    "🎨 Аргументирую дизайн так, чтобы клиент понял\n\n"
+    "Что делаем?"
 )
 
 TONES = {
@@ -81,19 +82,19 @@ USER_TONE: dict[int, str] = {}  # user_id -> tone key
 
 BRIEF_QS = [
     {"key": "situation", "q": "С чем нужно помочь?",
-     "opts": [["Новый проект", "Правки"], ["Цена", "Сроки"], ["Другое"]]},
+     "opts": [["🆕 Новый проект", "✏️ Правки"], ["💰 Цена", "⏰ Сроки"], ["📋 Другое"]]},
     {"key": "type", "q": "Какой тип проекта?",
-     "opts": [["Креатив", "Презентация"], ["Логотип", "Брендинг"], ["Другое"]]},
+     "opts": [["🎯 Креатив", "📊 Презентация"], ["✏️ Логотип", "💎 Брендинг"], ["📁 Другое"]]},
     {"key": "price", "q": "Какой бюджет или стоимость?",
-     "opts": [["До $100", "$100–300"], ["$300–500", "$500+"]]},
+     "opts": [["💵 До $100", "💵 $100–300"], ["💵 $300–500", "💵 $500+"]]},
     {"key": "deadline", "q": "Какие сроки?",
-     "opts": [["1–2 дня", "3–5 дней"], ["1–2 недели", "Дольше"]]},
+     "opts": [["⚡ 1–2 дня", "⏱ 3–5 дней"], ["📅 1–2 недели", "🧘 Дольше"]]},
     {"key": "revisions", "q": "Сколько правок включено?",
-     "opts": [["1 правка", "2 правки"], ["3 правки", "Без лимита"]]},
+     "opts": [["1️⃣ 1 правка", "2️⃣ 2 правки"], ["3️⃣ 3 правки", "♾ Без лимита"]]},
     {"key": "prepay", "q": "Какая предоплата?",
-     "opts": [["50%", "100%"], ["Без предоплаты"]]},
+     "opts": [["50%", "100%"], ["🤝 Без предоплаты"]]},
     {"key": "goal", "q": "Какой нужен результат ответа?",
-     "opts": [["Обозначить условия", "Закрыть сделку"], ["Напомнить о себе", "Отказать вежливо"]]},
+     "opts": [["📋 Обозначить условия", "🤝 Закрыть сделку"], ["🔔 Напомнить о себе", "🚫 Отказать вежливо"]]},
 ]
 
 ADMIN_USERS_PER_PAGE = 8
@@ -159,7 +160,7 @@ def kb_main():
 
 def kb_back_main():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")]
+        [InlineKeyboardButton("← Назад в меню", callback_data="back_main")]
     ])
 
 
@@ -197,22 +198,28 @@ def kb_brief_variants():
     ])
 
 
-def kb_brief_q(opts):
+def kb_brief_q(opts, step=0):
     rows = []
     for row in opts:
         for option in row:
             rows.append([InlineKeyboardButton(option, callback_data=f"bq_{option}")])
     rows.append([InlineKeyboardButton("✍️ Написать свой вариант", callback_data="bq_custom")])
     rows.append([InlineKeyboardButton("✨ Пропустить и собрать самому", callback_data="bq_skip_all")])
+    if step > 0:
+        rows.append([InlineKeyboardButton("← Назад", callback_data="bq_back")])
+    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
-def kb_design_q(opts):
+def kb_design_q(opts, step=0):
     rows = []
     for row in opts:
         for option in row:
             rows.append([InlineKeyboardButton(option, callback_data=f"dq_{option}")])
     rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
+    if step > 0:
+        rows.append([InlineKeyboardButton("← Назад", callback_data="dq_back")])
+    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -221,6 +228,8 @@ def kb_tone():
         [InlineKeyboardButton("🎨 Мой стиль", callback_data="tone_my")],
         [InlineKeyboardButton("💼 Профессионально", callback_data="tone_pro")],
         [InlineKeyboardButton("🤝 Дружелюбно", callback_data="tone_friendly")],
+        [InlineKeyboardButton("← Назад", callback_data="tone_back")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
@@ -228,6 +237,15 @@ def kb_volume():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Коротко", callback_data="vol_short")],
         [InlineKeyboardButton("📄 Развёрнуто", callback_data="vol_long")],
+        [InlineKeyboardButton("← Назад", callback_data="back_design_volume")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
+def kb_custom_back(callback_data):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Назад", callback_data=callback_data)],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
@@ -448,7 +466,7 @@ async def ask_design_q(target, user_id, context):
     qs = DESIGN_QUESTIONS.get(user_id, [])
 
     if step >= len(qs):
-        text = "Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту."
+        text = "📐 Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту."
         kb = kb_volume()
         if hasattr(target, 'edit_message_text'):
             await target.edit_message_text(text, reply_markup=kb)
@@ -469,8 +487,11 @@ async def ask_design_q(target, user_id, context):
             idx += 1
     rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
     rows.append([InlineKeyboardButton("⏭ Пропустить вопросы", callback_data="dq_skip_all")])
+    if step > 0:
+        rows.append([InlineKeyboardButton("← Назад", callback_data="dq_back")])
+    rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
     kb = InlineKeyboardMarkup(rows)
-    text = f"Вопрос {step + 1}/{len(qs)}\n\n{q['question']}\n\nМожно выбрать вариант или написать свой."
+    text = f"🎨 Вопрос {step + 1}/{len(qs)}\n\n{q['question']}\n\nМожно выбрать вариант или написать свой."
 
     if hasattr(target, 'edit_message_text'):
         await target.edit_message_text(text, reply_markup=kb)
@@ -483,7 +504,7 @@ async def ask_brief_q(target, user_id, context):
 
     if step >= len(BRIEF_QS):
         # Спрашиваем тон перед генерацией
-        text = "Тон ответа\n\nВыбери, как должно звучать сообщение клиенту."
+        text = "🎭 Тон ответа\n\nВыбери, как должно звучать сообщение клиенту."
         if hasattr(target, 'edit_message_text'):
             await target.edit_message_text(text, reply_markup=kb_tone())
         else:
@@ -492,8 +513,8 @@ async def ask_brief_q(target, user_id, context):
         return
 
     q = BRIEF_QS[step]
-    text = f"Вопрос {step + 1}/{len(BRIEF_QS)}\n\n{q['q']}"
-    kb = kb_brief_q(q["opts"])
+    text = f"💬 Вопрос {step + 1}/{len(BRIEF_QS)}\n\n{q['q']}"
+    kb = kb_brief_q(q["opts"], step)
 
     if hasattr(target, 'edit_message_text'):
         await target.edit_message_text(text, reply_markup=kb)
@@ -635,17 +656,72 @@ async def handle_callback(update: Update, context) -> None:
             reply_markup=kb_back_main()
         )
 
+    elif d == "bq_back":
+        step = max(0, BRIEF_STEP.get(uid, 0) - 1)
+        BRIEF_STEP[uid] = step
+        BRIEF_ANSWERS.get(uid, {}).pop(BRIEF_QS[step]["key"], None)
+        USER_MODE[uid] = "brief_q"
+        await ask_brief_q(q, uid, context)
+
+    elif d == "bq_cancel_custom":
+        USER_MODE[uid] = "brief_q"
+        await ask_brief_q(q, uid, context)
+
+    elif d == "dq_back":
+        step = max(0, DESIGN_STEP.get(uid, 0) - 1)
+        qs = DESIGN_QUESTIONS.get(uid, [])
+        DESIGN_STEP[uid] = step
+        if step < len(qs):
+            DESIGN_ANSWERS.get(uid, {}).pop(qs[step]["question"], None)
+        USER_MODE[uid] = "design_q"
+        await ask_design_q(q, uid, context)
+
+    elif d == "back_design_volume":
+        qs = DESIGN_QUESTIONS.get(uid, [])
+        if qs:
+            current_step = DESIGN_STEP.get(uid, 0)
+            DESIGN_STEP[uid] = len(qs) - 1 if current_step >= len(qs) else max(0, current_step)
+            DESIGN_ANSWERS.get(uid, {}).pop(qs[DESIGN_STEP[uid]]["question"], None)
+            USER_MODE[uid] = "design_q"
+            await ask_design_q(q, uid, context)
+        else:
+            USER_MODE[uid] = "design_wait_photo"
+            await q.edit_message_text(
+                "🎨 Аргументация дизайна\n\nПрикрепи скрин дизайна. Я задам пару вопросов и соберу варианты объяснения для клиента.",
+                reply_markup=kb_back_main()
+            )
+
+    elif d == "tone_back":
+        mode = USER_MODE.get(uid, "")
+        if mode == "brief_tone":
+            current_step = BRIEF_STEP.get(uid, 0)
+            BRIEF_STEP[uid] = max(0, min(current_step, len(BRIEF_QS) - 1))
+            BRIEF_ANSWERS.get(uid, {}).pop(BRIEF_QS[BRIEF_STEP[uid]]["key"], None)
+            USER_MODE[uid] = "brief_q"
+            await ask_brief_q(q, uid, context)
+        elif mode == "design_tone":
+            USER_MODE[uid] = "design_q"
+            await q.edit_message_text(
+                "📐 Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту.",
+                reply_markup=kb_volume()
+            )
+        else:
+            await q.edit_message_text(WELCOME, reply_markup=kb_main())
+
     # Brief questions
     elif d.startswith("bq_"):
         answer = d[3:]
         if answer == "skip_all":
-            await q.edit_message_text("Тон ответа\n\nВыбери, как должно звучать сообщение клиенту.", reply_markup=kb_tone())
+            await q.edit_message_text("🎭 Тон ответа\n\nВыбери, как должно звучать сообщение клиенту.", reply_markup=kb_tone())
             USER_MODE[uid] = "brief_tone"
         elif answer == "custom":
             USER_MODE[uid] = "brief_custom"
             step = BRIEF_STEP.get(uid, 0)
             hint = BRIEF_QS[step]["q"] if step < len(BRIEF_QS) else "Опиши:"
-            await q.edit_message_text(f"{hint}\n\nНапиши свой вариант одним сообщением.")
+            await q.edit_message_text(
+                f"✍️ {hint}\n\nНапиши свой вариант одним сообщением.",
+                reply_markup=kb_custom_back("bq_cancel_custom")
+            )
         else:
             step = BRIEF_STEP.get(uid, 0)
             ans = BRIEF_ANSWERS.get(uid, {})
@@ -708,12 +784,12 @@ async def handle_callback(update: Update, context) -> None:
 
     elif d == "vol_short":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "коротко (3–5 строк)"
-        await q.edit_message_text("Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
+        await q.edit_message_text("🎭 Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
         USER_MODE[uid] = "design_tone"
 
     elif d == "vol_long":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "развёрнуто"
-        await q.edit_message_text("Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
+        await q.edit_message_text("🎭 Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
         USER_MODE[uid] = "design_tone"
 
     elif d.startswith("tone_"):
