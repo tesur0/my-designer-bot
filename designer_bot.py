@@ -4,6 +4,7 @@ import json
 import base64
 import random
 import logging
+import tempfile
 import anthropic
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
@@ -11,6 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 DATA_FILE = "/tmp/bot_data.json"
 
@@ -224,6 +226,45 @@ async def send_long_message(context, chat_id, text, reply_markup=None):
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
         await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
+
+
+async def transcribe_voice_message(update: Update, context) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    from openai import OpenAI
+
+    media = update.message.voice or update.message.audio
+    if not media:
+        raise RuntimeError("No voice or audio file found")
+
+    suffix = ".ogg"
+    if update.message.audio and update.message.audio.file_name:
+        suffix = Path(update.message.audio.file_name).suffix or ".mp3"
+
+    tmp_path = ""
+    try:
+        tg_file = await context.bot.get_file(media.file_id)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+
+        await tg_file.download_to_drive(tmp_path)
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        with open(tmp_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="ru"
+            )
+
+        return transcript.text.strip()
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────────
@@ -1117,6 +1158,53 @@ async def handle_unsupported_input(update: Update, context) -> None:
         await update.message.reply_text("Выбери режим в главном меню.", reply_markup=kb_main())
 
 
+async def handle_voice(update: Update, context) -> None:
+    uid = update.effective_user.id
+    if not is_allowed(uid):
+        return
+
+    mode = USER_MODE.get(uid, "")
+    if mode != "tz_wait_input":
+        await update.message.reply_text(
+            "Голосовое можно распознать в режиме «✨ Улучшить ТЗ».",
+            reply_markup=kb_main()
+        )
+        return
+
+    thinking_msg = await update.message.reply_text("🎧 Распознаю голосовое...")
+
+    try:
+        transcript = await transcribe_voice_message(update, context)
+        if not transcript:
+            raise RuntimeError("Empty transcript")
+
+        USER_MODE[uid] = ""
+        await gen_tz(
+            uid,
+            context,
+            update.message.chat_id,
+            text=f"Расшифровка голосового сообщения:\n{transcript}"
+        )
+    except RuntimeError as e:
+        logger.error(f"voice_transcribe config error: {e}")
+        await update.message.reply_text(
+            "Не получилось распознать голосовое.\n\n"
+            "Проверь, что в Railway Variables добавлен OPENAI_API_KEY, или пришли текст/скрин.",
+            reply_markup=kb_tz_input()
+        )
+    except Exception as e:
+        logger.error(f"voice_transcribe error: {e}")
+        await update.message.reply_text(
+            "Не получилось распознать голосовое. Попробуй отправить его ещё раз или пришли текстом.",
+            reply_markup=kb_tz_input()
+        )
+    finally:
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+
+
 def main():
     if not ANTHROPIC_API_KEY:
         print("❌ Установи ANTHROPIC_API_KEY")
@@ -1127,7 +1215,8 @@ def main():
     app.add_handler(CommandHandler("register", register_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE | filters.Document.ALL, handle_unsupported_input))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_unsupported_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
