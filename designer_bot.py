@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 DATA_FILE = "/tmp/bot_data.json"
 
@@ -31,6 +32,8 @@ BRIEF_STEP: dict[int, int] = {}
 BRIEF_VARIANTS: dict[int, list] = {}
 TZ_SOURCE: dict[int, dict] = {}
 TZ_PENDING: dict[int, dict] = {}
+PUSH_IMAGE: dict[int, str] = {}
+PUSH_VARIANTS: dict[int, list] = {}
 
 THINKING = [
     "⏳ Анализирую контекст...",
@@ -46,8 +49,64 @@ WELCOME = (
     "💬 Составлю ответ на любую ситуацию\n"
     "🎨 Аргументирую дизайн так, чтобы клиент понял\n\n"
     "🔎 Распознаю хаос в понятное ТЗ\n\n"
+    "📲 Помогу мягко запушить клиента\n\n"
     "Что делаем?"
 )
+
+PUSH_CLIENT_SYSTEM = """Ты - опытный маркетолог, психолог и эксперт по продажам с опытом более 10 лет.
+
+Ты отлично понимаешь психологию клиентов, умеешь возобновлять зависшие переговоры и возвращать интерес без давления и навязчивости.
+
+Твоя задача:
+Проанализировать скриншот переписки между пользователем и клиентом.
+
+Определи:
+- о чём был разговор
+- на каком этапе остановилась коммуникация
+- кто написал последнее сообщение
+- сколько примерно прошло времени
+- какой общий тон общения
+- насколько клиент заинтересован
+
+После анализа напиши 3 варианта сообщения для возобновления диалога.
+
+Запрещено:
+- "Добрый день, хотел уточнить..."
+- "Напоминаю о себе..."
+- "Есть ли новости?"
+- "Хотел узнать ваше решение"
+- любые шаблонные фразы менеджеров
+- давление
+- манипуляции
+- чувство вины
+- ультиматумы
+- пассивная агрессия
+
+Каждое сообщение должно звучать как сообщение от живого человека.
+
+Варианты должны отличаться:
+Вариант 1 - через ценность. Напомнить о проекте через пользу для клиента.
+Вариант 2 - через вопрос. Лёгкий естественный вопрос, который продолжает разговор.
+Вариант 3 - через инфоповод. Новый повод написать без ощущения продажи.
+
+Ограничения:
+- максимум 2-3 предложения
+- коротко
+- без воды
+- без корпоративного стиля
+- без канцелярита
+- без эмодзи
+- без звёздочек
+- без markdown-разметки
+- использовать только обычный текст
+- дефис использовать только как дефис
+- не используй длинное тире
+
+Если по скриншоту видно, что клиент уже отказался или явно закрыл сделку:
+Не пытайся продавить его. Вместо этого сформируй 3 мягких варианта восстановления контакта на будущее.
+
+Если данных на скриншоте мало:
+Сообщи об этом кратко и всё равно предложи максимально релевантные варианты на основе доступного контекста."""
 
 TZ_SYSTEM = """Ты - профессиональный проектный менеджер, бизнес-аналитик и арт-директор с опытом работы в дизайне, маркетинге и digital-проектах.
 
@@ -180,6 +239,29 @@ def picked_variant_text(index: int, variant: str) -> str:
     return f"Вариант {index}\n\n{variant}"
 
 
+def parse_three_variants(raw: str) -> list:
+    raw = re.sub(r'```json|```', '', raw.strip()).strip()
+    variants = []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            variants = [clean(str(item)) for item in data if clean(str(item))]
+    except Exception:
+        pass
+
+    if not variants:
+        parts = re.split(r"\bВариант\s+\d+\b", raw, flags=re.IGNORECASE)
+        variants = [clean(part) for part in parts if clean(part)]
+
+    if not variants:
+        variants = [clean(raw)]
+
+    while len(variants) < 3:
+        variants.append("Не хватило данных на скриншоте. Пришли более полный фрагмент переписки, и я соберу точнее.")
+
+    return variants[:3]
+
+
 def compact_short_tz(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     compact = "\n".join(lines[:12])
@@ -258,6 +340,7 @@ def kb_main():
         [InlineKeyboardButton("💬 Ответ клиенту", callback_data="mode_brief")],
         [InlineKeyboardButton("🎨 Аргументация дизайна", callback_data="mode_design")],
         [InlineKeyboardButton("🔎 Распознать ТЗ", callback_data="mode_tz")],
+        [InlineKeyboardButton("📲 Запушить клиента", callback_data="mode_push_client")],
     ])
 
 
@@ -373,6 +456,24 @@ def kb_after_tz():
         [InlineKeyboardButton("📝 Кратко", callback_data="tz_format_short"),
          InlineKeyboardButton("📄 Подробнее", callback_data="tz_format_full")],
         [InlineKeyboardButton("🔎 Распознать новое ТЗ", callback_data="mode_tz")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
+def kb_after_push():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("← К вариантам", callback_data="back_push_variants")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
+def kb_push_variants():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Вариант 1", callback_data="push_pick_0"),
+         InlineKeyboardButton("Вариант 2", callback_data="push_pick_1"),
+         InlineKeyboardButton("Вариант 3", callback_data="push_pick_2")],
+        [InlineKeyboardButton("🔄 Ещё варианты", callback_data="refresh_push_client")],
+        [InlineKeyboardButton("📲 Новый скрин", callback_data="mode_push_client")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
@@ -586,6 +687,79 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
             chat_id=chat_id,
             text="Не получилось собрать ответ. Попробуй обновить варианты или начать заново.",
             reply_markup=kb_back_main()
+        )
+
+
+async def gen_push_client_variants(user_id, context, chat_id, refresh=False):
+    if not OPENAI_API_KEY:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Для этого инструмента нужен OPENAI_API_KEY в Railway Variables.",
+            reply_markup=kb_back_main()
+        )
+        return
+
+    from openai import OpenAI
+
+    img = PUSH_IMAGE.get(user_id, "")
+    if not img:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Сначала прикрепи скрин переписки с клиентом.",
+            reply_markup=kb_back_main()
+        )
+        return
+
+    tone = TONES.get(USER_TONE.get(user_id, "my"), TONES["my"])
+    seed = f"вариация {random.randint(1000,9999)}" if refresh else "старт"
+    system = f"""{PUSH_CLIENT_SYSTEM}
+
+Дополнительный тон ответа:
+{tone["prompt"]}
+
+Верни ТОЛЬКО JSON без markdown:
+["вариант 1", "вариант 2", "вариант 3"]"""
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        msg = client.chat.completions.create(
+            model=OPENAI_TEXT_MODEL,
+            max_tokens=1200,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Проанализируй скрин переписки и напиши 3 варианта сообщения, "
+                            f"чтобы мягко возобновить диалог. {seed}"
+                        )
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img}"}
+                    }
+                ]}
+            ]
+        )
+        variants = parse_three_variants(msg.choices[0].message.content)
+        PUSH_VARIANTS[user_id] = variants
+
+        text = ""
+        for index, variant in enumerate(variants[:3], 1):
+            text += f"Вариант {index}\n\n{variant}\n\n"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text.strip(),
+            reply_markup=kb_push_variants()
+        )
+    except Exception as e:
+        logger.error(f"gen_push_client error: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Не получилось подготовить варианты. Попробуй отправить более чёткий скрин переписки.",
+            reply_markup=kb_after_push()
         )
 
 
@@ -986,6 +1160,15 @@ async def handle_callback(update: Update, context) -> None:
             reply_markup=kb_tz_input()
         )
 
+    elif d == "mode_push_client":
+        USER_MODE[uid] = "push_wait_photo"
+        PUSH_IMAGE[uid] = ""
+        PUSH_VARIANTS[uid] = []
+        await q.edit_message_text(
+            "Прикрепи скрин переписки с клиентом 📸",
+            reply_markup=kb_back_main()
+        )
+
     elif d == "tz_improve":
         await q.edit_message_text(random.choice(THINKING))
         await gen_tz_improvements(uid, context, q.message.chat_id)
@@ -1059,6 +1242,12 @@ async def handle_callback(update: Update, context) -> None:
             await q.edit_message_text(
                 "📐 Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту.",
                 reply_markup=kb_volume()
+            )
+        elif mode == "push_tone":
+            USER_MODE[uid] = "push_wait_photo"
+            await q.edit_message_text(
+                "Прикрепи скрин переписки с клиентом 📸",
+                reply_markup=kb_back_main()
             )
         else:
             await q.edit_message_text(WELCOME, reply_markup=kb_main())
@@ -1156,6 +1345,8 @@ async def handle_callback(update: Update, context) -> None:
             await gen_design_variants(uid, context, q.message.chat_id)
         elif mode == "brief_tone":
             await gen_brief_variants(uid, context, q.message.chat_id)
+        elif mode == "push_tone":
+            await gen_push_client_variants(uid, context, q.message.chat_id)
 
     # Design variants
     elif d.startswith("pick_"):
@@ -1175,6 +1366,24 @@ async def handle_callback(update: Update, context) -> None:
     elif d == "refresh_design":
         await q.edit_message_text(random.choice(THINKING))
         await gen_design_variants(uid, context, q.message.chat_id, refresh=True)
+
+    elif d == "refresh_push_client":
+        await q.edit_message_text(random.choice(THINKING))
+        await gen_push_client_variants(uid, context, q.message.chat_id, refresh=True)
+
+    elif d.startswith("push_pick_"):
+        idx = int(d[10:])
+        variants = PUSH_VARIANTS.get(uid, [])
+        if idx < len(variants):
+            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_push())
+
+    elif d == "back_push_variants":
+        variants = PUSH_VARIANTS.get(uid, [])
+        if variants:
+            text = ""
+            for index, variant in enumerate(variants[:3], 1):
+                text += f"Вариант {index}\n\n{variant}\n\n"
+            await q.edit_message_text(text.strip(), reply_markup=kb_push_variants())
 
 
 async def handle_photo(update: Update, context) -> None:
@@ -1196,6 +1405,26 @@ async def handle_photo(update: Update, context) -> None:
         await update.message.reply_text(
             "Материал получил.\n\nКак подготовить результат?",
             reply_markup=kb_tz_format()
+        )
+        return
+
+    if mode == "push_wait_photo":
+        thinking_msg = await update.message.reply_text(random.choice(THINKING))
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        file_bytes = await file.download_as_bytearray()
+        img_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
+        PUSH_IMAGE[uid] = img_data
+        USER_MODE[uid] = "push_tone"
+
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "🎭 Выбери тон сообщения:",
+            reply_markup=kb_tone()
         )
         return
 
@@ -1274,6 +1503,13 @@ async def handle_message(update: Update, context) -> None:
     if mode == "design_wait_photo":
         await update.message.reply_text(
             "Пришли скрин дизайна изображением. После этого я задам уточняющие вопросы.",
+            reply_markup=kb_back_main()
+        )
+        return
+
+    if mode == "push_wait_photo":
+        await update.message.reply_text(
+            "Прикрепи скрин переписки с клиентом 📸",
             reply_markup=kb_back_main()
         )
         return
