@@ -94,11 +94,8 @@ async def start(update: Update, context) -> None:
         return
     USER_MODE[user_id] = ""
     CONVERSATIONS[user_id] = []
-    await update.message.reply_photo(
-        photo="https://i.postimg.cc/0NHyKKnG/Frame-3.png",
-        caption="Выбери что делаем 👇",
-        reply_markup=get_main_keyboard()
-    )
+    await update.message.reply_photo(photo="https://i.postimg.cc/0NHyKKnG/Frame-3.png")
+    await update.message.reply_text("Выбери что делаем 👇", reply_markup=get_main_keyboard())
 
 
 async def register(update: Update, context) -> None:
