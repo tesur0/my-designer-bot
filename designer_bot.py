@@ -6,7 +6,7 @@ import random
 import logging
 import anthropic
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
@@ -26,7 +26,49 @@ DESIGN_IMAGE: dict[int, str] = {}
 DESIGN_ANSWERS: dict[int, dict] = {}
 DESIGN_QUESTIONS: dict[int, list] = {}
 DESIGN_STEP: dict[int, int] = {}
-DESIGN_VARIANTS: dict[int, list] = {}  # 3 варианта аргументации
+DESIGN_VARIANTS: dict[int, list] = {}
+
+BRIEF_ANSWERS: dict[int, dict] = {}
+BRIEF_STEP: dict[int, int] = {}
+BRIEF_VARIANTS: dict[int, list] = {}
+
+BRIEF_QUESTIONS = [
+    {
+        "key": "situation",
+        "question": "Что за ситуация?",
+        "options": [["Новый проект", "Правки"], ["Цена", "Сроки"], ["Другое"]]
+    },
+    {
+        "key": "project_type",
+        "question": "Тип проекта?",
+        "options": [["Креатив", "Презентация"], ["Логотип", "Брендинг"], ["Другое"]]
+    },
+    {
+        "key": "price",
+        "question": "Сколько стоит работа?",
+        "options": [["До $100", "$100-300"], ["$300-500", "Больше $500"]]
+    },
+    {
+        "key": "deadline",
+        "question": "Какие сроки?",
+        "options": [["1-2 дня", "3-5 дней"], ["1-2 недели", "Больше"]]
+    },
+    {
+        "key": "revisions",
+        "question": "Сколько правок включено?",
+        "options": [["1 правка", "2 правки"], ["3 правки", "Без ограничений"]]
+    },
+    {
+        "key": "prepayment",
+        "question": "Есть предоплата?",
+        "options": [["50%", "100%"], ["Без предоплаты"]]
+    },
+    {
+        "key": "message",
+        "question": "Что нужно сказать клиенту?",
+        "options": [["Обозначить условия", "Напомнить о себе"], ["Закрыть сделку", "Отказать вежливо"]]
+    },
+]
 
 THINKING_PHRASES = [
     "Анализирую...",
@@ -104,9 +146,20 @@ def generate_key() -> str:
 
 # ── Клавиатуры ────────────────────────────────────────────────────────────────
 
+def get_bottom_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("💬 Ответить клиенту"), KeyboardButton("🎨 Аргументация")],
+            [KeyboardButton("🗑 Очистить")]
+        ],
+        resize_keyboard=True,
+        persistent=True
+    )
+
+
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief")],
+        [InlineKeyboardButton("💬 Отвечаем клиенту", callback_data="mode_brief")],
         [InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")]
     ])
 
@@ -126,6 +179,23 @@ def get_variants_keyboard():
         ],
         [InlineKeyboardButton("🔄 Обновить варианты", callback_data="refresh_variants")]
     ])
+
+
+def get_brief_variants_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("1", callback_data="bpick_0"),
+            InlineKeyboardButton("2", callback_data="bpick_1"),
+            InlineKeyboardButton("3", callback_data="bpick_2"),
+        ],
+        [InlineKeyboardButton("🔄 Обновить варианты", callback_data="brefresh")]
+    ])
+
+
+def get_brief_question_keyboard(options: list) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(opt, callback_data=f"bq_{opt}") for opt in row] for row in options]
+    rows.append([InlineKeyboardButton("✍️ Опишу сам", callback_data="bq_custom")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_volume_keyboard():
@@ -176,6 +246,7 @@ async def start(update: Update, context) -> None:
     if is_owner(user_id):
         USER_MODE[user_id] = ""
         CONVERSATIONS[user_id] = []
+        await update.message.reply_text("👋", reply_markup=get_bottom_keyboard())
         await update.message.reply_text(WELCOME_TEXT, reply_markup=get_main_keyboard())
         return
 
@@ -185,12 +256,11 @@ async def start(update: Update, context) -> None:
     if user and user.get("active"):
         USER_MODE[user_id] = ""
         CONVERSATIONS[user_id] = []
+        await update.message.reply_text("👋", reply_markup=get_bottom_keyboard())
         await update.message.reply_text(WELCOME_TEXT, reply_markup=get_main_keyboard())
     else:
         USER_MODE[user_id] = "waiting_key"
-        await update.message.reply_text(
-            "Привет 👋\n\nВведите ключ доступа 🔑"
-        )
+        await update.message.reply_text("Привет 👋\n\nВведите ключ доступа 🔑")
 
 
 async def admin(update: Update, context) -> None:
@@ -264,9 +334,14 @@ async def handle_callback(update: Update, context) -> None:
         return
 
     if data_str == "mode_brief":
-        USER_MODE[user_id] = "brief"
-        CONVERSATIONS[user_id] = []
-        await query.edit_message_text("Окей, помогу составить ответ.\n\nЧто за ситуация?")
+        USER_MODE[user_id] = "brief_questions"
+        BRIEF_ANSWERS[user_id] = {}
+        BRIEF_STEP[user_id] = 0
+        q = BRIEF_QUESTIONS[0]
+        await query.edit_message_text(
+            q["question"],
+            reply_markup=get_brief_question_keyboard(q["options"])
+        )
 
     elif data_str == "mode_design":
         USER_MODE[user_id] = "design_wait_photo"
@@ -311,6 +386,33 @@ async def handle_callback(update: Update, context) -> None:
     elif data_str == "refresh_variants":
         await query.edit_message_text(random.choice(THINKING_PHRASES))
         await _generate_argumentation(user_id, context, query.message.chat_id, refresh=True)
+
+    elif data_str.startswith("bq_"):
+        answer = data_str[3:]
+        if answer == "custom":
+            USER_MODE[user_id] = "brief_custom_input"
+            step = BRIEF_STEP.get(user_id, 0)
+            q = BRIEF_QUESTIONS[step] if step < len(BRIEF_QUESTIONS) else None
+            hint = q["question"] if q else "Опиши своими словами:"
+            await query.edit_message_text(f"{hint}\n\nНапиши свой вариант:")
+        else:
+            step = BRIEF_STEP.get(user_id, 0)
+            answers = BRIEF_ANSWERS.get(user_id, {})
+            if step < len(BRIEF_QUESTIONS):
+                answers[BRIEF_QUESTIONS[step]["key"]] = answer
+                BRIEF_ANSWERS[user_id] = answers
+                BRIEF_STEP[user_id] = step + 1
+                await _ask_next_brief_question(query, user_id, context)
+
+    elif data_str.startswith("bpick_"):
+        idx = int(data_str.replace("bpick_", ""))
+        variants = BRIEF_VARIANTS.get(user_id, [])
+        if idx < len(variants):
+            await query.edit_message_text(variants[idx], reply_markup=get_back_keyboard())
+
+    elif data_str == "brefresh":
+        await query.edit_message_text(random.choice(THINKING_PHRASES))
+        await _generate_brief_response(user_id, context, query.message.chat_id, refresh=True)
 
 
 async def _ask_next_design_question(query_or_message, user_id: int, context):
@@ -384,6 +486,77 @@ async def _generate_argumentation(user_id: int, context, chat_id: int, refresh: 
         )
     except Exception as e:
         logger.error(f"Error: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.")
+
+
+async def _ask_next_brief_question(query_or_message, user_id: int, context):
+    step = BRIEF_STEP.get(user_id, 0)
+
+    if step >= len(BRIEF_QUESTIONS):
+        USER_MODE[user_id] = "brief_generating"
+        text = random.choice(THINKING_PHRASES)
+        chat_id = user_id
+        if hasattr(query_or_message, 'edit_message_text'):
+            await query_or_message.edit_message_text(text)
+            chat_id = query_or_message.message.chat_id
+        else:
+            msg = await context.bot.send_message(chat_id=user_id, text=text)
+            chat_id = msg.chat_id
+        await _generate_brief_response(user_id, context, chat_id)
+        return
+
+    q = BRIEF_QUESTIONS[step]
+    text = q["question"]
+    keyboard = get_brief_question_keyboard(q["options"])
+
+    if hasattr(query_or_message, 'edit_message_text'):
+        await query_or_message.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard)
+
+
+async def _generate_brief_response(user_id: int, context, chat_id: int, refresh: bool = False):
+    answers = BRIEF_ANSWERS.get(user_id, {})
+    answers_text = "\n".join([f"- {k}: {v}" for k, v in answers.items()])
+    seed = f"вариация {random.randint(1000,9999)}" if refresh else "основная генерация"
+
+    system = f"""Ты пишешь ответ клиенту от лица дизайнера.
+
+Данные:
+{answers_text}
+
+Сгенерируй РОВНО 3 разных варианта ответа клиенту. Каждый отличается по тону и подаче.
+Верни ТОЛЬКО JSON без markdown:
+["вариант 1", "вариант 2", "вариант 3"]
+
+""" + ARTEM_STYLE
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1500,
+            system=system,
+            messages=[{"role": "user", "content": f"Напиши 3 варианта ответа клиенту. {seed}"}]
+        )
+        raw = re.sub(r'```json|```', '', message.content[0].text.strip()).strip()
+        variants = json.loads(raw)
+        variants = [clean_text(v) for v in variants]
+        BRIEF_VARIANTS[user_id] = variants
+
+        preview = ""
+        for i, v in enumerate(variants, 1):
+            short = v[:120] + "..." if len(v) > 120 else v
+            preview += f"*{i}.*\n{short}\n\n"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Готово, вот 3 варианта:\n\n{preview}Выбери или обнови:",
+            reply_markup=get_brief_variants_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error brief: {e}")
         await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.")
 
 
@@ -498,6 +671,32 @@ async def handle_message(update: Update, context) -> None:
         await update.message.reply_text("Введите ключ доступа 🔑")
         return
 
+    # Обработка нижних кнопок
+    if user_text == "🗑 Очистить":
+        USER_MODE[user_id] = ""
+        CONVERSATIONS[user_id] = []
+        BRIEF_ANSWERS[user_id] = {}
+        DESIGN_ANSWERS[user_id] = {}
+        await update.message.reply_text(WELCOME_TEXT, reply_markup=get_main_keyboard())
+        return
+
+    if user_text == "💬 Ответить клиенту":
+        USER_MODE[user_id] = "brief_questions"
+        BRIEF_ANSWERS[user_id] = {}
+        BRIEF_STEP[user_id] = 0
+        q = BRIEF_QUESTIONS[0]
+        await update.message.reply_text(q["question"], reply_markup=get_brief_question_keyboard(q["options"]))
+        return
+
+    if user_text == "🎨 Аргументация":
+        USER_MODE[user_id] = "design_wait_photo"
+        DESIGN_IMAGE[user_id] = ""
+        DESIGN_ANSWERS[user_id] = {}
+        DESIGN_QUESTIONS[user_id] = []
+        DESIGN_STEP[user_id] = 0
+        await update.message.reply_text("Прикрепи скрин дизайна 🖼")
+        return
+
     if not mode or mode == "design_wait_photo":
         await update.message.reply_text("Выбери что делаем 👇", reply_markup=get_main_keyboard())
         return
@@ -511,6 +710,21 @@ async def handle_message(update: Update, context) -> None:
             DESIGN_ANSWERS[user_id] = answers
             DESIGN_STEP[user_id] = step + 1
             await _ask_next_design_question(update.message, user_id, context)
+        return
+
+    if mode == "brief_questions":
+        await update.message.reply_text("Используй кнопки или нажми ✍️ Опишу сам")
+        return
+
+    if mode == "brief_custom_input":
+        step = BRIEF_STEP.get(user_id, 0)
+        answers = BRIEF_ANSWERS.get(user_id, {})
+        if step < len(BRIEF_QUESTIONS):
+            answers[BRIEF_QUESTIONS[step]["key"]] = user_text
+            BRIEF_ANSWERS[user_id] = answers
+            BRIEF_STEP[user_id] = step + 1
+            USER_MODE[user_id] = "brief_questions"
+            await _ask_next_brief_question(update.message, user_id, context)
         return
 
     if user_id not in CONVERSATIONS:
