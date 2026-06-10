@@ -1,7 +1,9 @@
 import os
+import re
+import base64
 import logging
 import anthropic
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
@@ -11,129 +13,77 @@ TELEGRAM_TOKEN = "8892738780:AAH8gp8l-c81Z9YwRd_Tv0YeMIDjJg1AYGg"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Состояния пользователя
 USER_MODE: dict[int, str] = {}
-USER_DATA: dict[int, dict] = {}
 CONVERSATIONS: dict[int, list[dict]] = {}
+
+# Для аргументации
+DESIGN_IMAGE: dict[int, str] = {}       # base64 картинки
+DESIGN_ANSWERS: dict[int, dict] = {}    # ответы на вопросы
+DESIGN_QUESTIONS: dict[int, list] = {}  # вопросы сгенерированные AI
+DESIGN_STEP: dict[int, int] = {}        # текущий шаг
 
 ARTEM_STYLE = """Твоя задача — писать так, будто ты Артём, молодой диджитал-дизайнер с сильным чувством вкуса и опытом работы с клиентами.
 
-Стиль общения:
-— Пиши простым разговорным языком.
-— Избегай сложных конструкций, канцелярита и умных слов ради умных слов.
-— Текст должен ощущаться живым, а не написанным нейросетью.
-— Часто используй короткие предложения.
-— Допускаются разговорные слова: "короче", "в общем", "смотри", "по сути", "честно", "на самом деле".
-— Не будь слишком формальным.
-— Не пытайся звучать как эксперт из учебника.
-— Важнее быть понятным, чем идеально грамотным.
-— Пиши коротко — только суть, без лишних слов и воды.
+Стиль:
+— Простой разговорный язык, коротко и по делу.
+— Короткие предложения. Никакой воды.
+— Разговорные слова: "короче", "смотри", "по сути", "честно".
+— Никаких клише: "уникальный подход", "выведите бизнес на новый уровень", "уверенное предложение от тех кто знает своё дело".
+— Никаких эмодзи без необходимости.
+— Текст должен звучать как живой человек, а не нейросеть.
+— Всегда тире — а не дефис. НИКОГДА не пиши слова через дефис типа "крипто-сервис" — только слитно или раздельно.
 
-Особенности мышления:
-— Любишь конкретику и ненавидишь воду.
-— Всегда ищешь практическую выгоду.
-— Ценишь эстетику, премиальность и хороший визуал.
-— Скептически относишься к поверхностным советам.
-— Предпочитаешь честный разбор вместо мотивационных цитат.
+Примеры фраз: "Смотри, тут задача была...", "Я пошёл по пути...", "Это работает потому что...", "По сути здесь важно..."
 
-Когда пишешь тексты:
-— Не используй клише вроде "выведите бизнес на новый уровень", "инновационные решения", "уникальный подход", "уверенное предложение от тех, кто знает своё дело" и подобное — это звучит как ChatGPT.
-— Не используй эмодзи без необходимости.
-— Не пиши слишком официально.
-— Не делай текст похожим на рекламу нейросети.
-— Пиши так, будто сообщение отправляется другу, клиенту или коллеге в Telegram.
-— Всегда используй тире — а не дефис - в тексте. НИКОГДА не пиши слова через дефис типа "крипто-сервис", "крипто-ниша", "диджитал-дизайнер" — пиши слитно или раздельно: "криптосервис", "крипто ниша", "диджитал дизайнер".
-— Меньше текста — только то что важно.
+Главное: коротко, живо, без пафоса."""
 
-Примеры фраз:
-"Смотри, тут можно сделать намного сильнее."
-"По сути проблема не в дизайне, а в подаче."
-"Выглядит неплохо, но есть что докрутить."
-"Я бы пошёл немного другим путём."
-"Честно, я бы на это деньги не тратил."
-"Короче, идея такая."
+BRIEF_SYSTEM = """Ты помогаешь дизайнеру Артёму сформулировать ответ клиенту. Задавай вопросы по одному.
 
-Главное правило: текст должен создавать ощущение, что его написал живой человек с опытом, а не копирайтер или нейросеть. Короче и честнее — всегда лучше."""
-
-BRIEF_SYSTEM = """Ты помогаешь дизайнеру Артёму сформулировать ответ клиенту.
-
-Задавай вопросы по одному чтобы собрать всю нужную информацию:
-1. Что за ситуация — новый проект, правки, согласование, цена, сроки?
+Вопросы:
+1. Что за ситуация — новый проект, правки, цена, сроки?
 2. Какой тип проекта?
-3. Сколько стоит работа?
+3. Сколько стоит?
 4. Какие сроки?
 5. Сколько правок включено?
 6. Есть ли предоплата?
 7. Что именно нужно сказать клиенту?
 
-Когда собрал всё — напиши готовый ответ клиенту в стиле Артёма.
+Когда собрал всё — напиши готовый ответ клиенту.
 
 """ + ARTEM_STYLE
 
-DESIGN_SYSTEM = """Ты помогаешь дизайнеру Артёму написать аргументацию к дизайну для клиента.
 
-Сначала задай вопросы:
-1. Что за проект — какой тип дизайна?
-2. Какая была задача/цель?
-3. Опиши что сделал — цвета, шрифты, композиция, решения.
-4. Почему именно такой подход?
-5. Что хотел донести этим дизайном?
-
-Когда собрал всё — напиши живую аргументацию в стиле Артёма. Не сухое ТЗ, а живой текст который объясняет решения и снимает вопросы клиента.
-
-""" + ARTEM_STYLE
+def clean_text(text: str) -> str:
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r'(?<=\w)-(?=\w)', '—', text)
+    return text
 
 
 def get_main_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief"),
-            InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")
-        ]
-    ])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("💬 Ответить клиенту", callback_data="mode_brief"),
+        InlineKeyboardButton("🎨 Аргументация клиенту", callback_data="mode_design")
+    ]])
 
 
-def get_design_type_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Креатив", callback_data="dt_creative"),
-            InlineKeyboardButton("Презентация", callback_data="dt_presentation")
-        ],
-        [
-            InlineKeyboardButton("Логотип", callback_data="dt_logo"),
-            InlineKeyboardButton("Брендинг", callback_data="dt_branding")
-        ],
-        [InlineKeyboardButton("Другое", callback_data="dt_other")]
-    ])
+def get_back_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("← Главное меню", callback_data="back_main")
+    ]])
 
 
-def get_design_goal_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Продажи", callback_data="dg_sales"),
-            InlineKeyboardButton("Доверие", callback_data="dg_trust")
-        ],
-        [
-            InlineKeyboardButton("Узнаваемость", callback_data="dg_brand"),
-            InlineKeyboardButton("Вовлечённость", callback_data="dg_engage")
-        ]
-    ])
-
-
-# Хранилище данных для аргументации
-DESIGN_FLOW: dict[int, dict] = {}
+def get_volume_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Коротко (3-5 строк)", callback_data="vol_short"),
+        InlineKeyboardButton("Развёрнуто", callback_data="vol_long")
+    ]])
 
 
 def is_owner(user_id: int) -> bool:
-    if OWNER_ID == 0:
-        return True  # если не настроен — пускаем всех
-    return user_id == OWNER_ID
+    return OWNER_ID == 0 or user_id == OWNER_ID
 
 
 async def start(update: Update, context) -> None:
@@ -141,137 +91,127 @@ async def start(update: Update, context) -> None:
     if not is_owner(user_id):
         await update.message.reply_text("Нет доступа.")
         return
-
     USER_MODE[user_id] = ""
-    USER_DATA[user_id] = {}
     CONVERSATIONS[user_id] = []
-
-    await update.message.reply_text(
-        "Привет 👋\n\nЧто делаем?",
-        reply_markup=get_main_keyboard()
-    )
+    await update.message.reply_text("Привет 👋\n\nЧто делаем?", reply_markup=get_main_keyboard())
 
 
 async def register(update: Update, context) -> None:
     user_id = update.effective_user.id
-    await update.message.reply_text(
-        f"Твой ID: {user_id}\n\nДобавь в Railway Variables:\nOWNER_ID = {user_id}"
-    )
+    await update.message.reply_text(f"Твой ID: {user_id}\n\nДобавь в Railway Variables:\nOWNER_ID = {user_id}")
 
 
 async def handle_callback(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-
     if not is_owner(user_id):
         return
-
     data = query.data
 
     if data == "mode_brief":
         USER_MODE[user_id] = "brief"
         CONVERSATIONS[user_id] = []
-        await query.edit_message_text(
-            "Окей, помогу составить ответ клиенту.\n\nЧто за ситуация?"
-        )
+        await query.edit_message_text("Окей, помогу составить ответ.\n\nЧто за ситуация?")
 
     elif data == "mode_design":
-        USER_MODE[user_id] = "design"
-        CONVERSATIONS[user_id] = []
-        DESIGN_FLOW[user_id] = {}
-        await query.edit_message_text(
-            "Что за проект?",
-            reply_markup=get_design_type_keyboard()
-        )
-
-    elif data.startswith("dt_"):
-        types = {
-            "dt_creative": "Креатив",
-            "dt_presentation": "Презентация",
-            "dt_logo": "Логотип",
-            "dt_branding": "Брендинг",
-            "dt_other": "Другое"
-        }
-        DESIGN_FLOW.setdefault(user_id, {})["type"] = types.get(data, "Проект")
-        await query.edit_message_text(
-            f"Тип: {types.get(data)} ✓\n\nКакая главная цель дизайна?",
-            reply_markup=get_design_goal_keyboard()
-        )
-
-    elif data.startswith("dg_"):
-        goals = {
-            "dg_sales": "Продажи",
-            "dg_trust": "Доверие",
-            "dg_brand": "Узнаваемость",
-            "dg_engage": "Вовлечённость"
-        }
-        DESIGN_FLOW.setdefault(user_id, {})["goal"] = goals.get(data, "")
-        proj_type = DESIGN_FLOW.get(user_id, {}).get("type", "")
-        goal = goals.get(data, "")
-        # Записываем в историю и просим описать дизайн
-        CONVERSATIONS[user_id] = [
-            {"role": "user", "content": f"Тип проекта: {proj_type}. Цель: {goal}."},
-            {"role": "assistant", "content": f"Понял — {proj_type}, цель: {goal.lower()}.\n\nОпиши что сделал: цвета, шрифты, композицию, ключевые решения."}
-        ]
-        await query.edit_message_text(
-            f"Тип: {proj_type} ✓\nЦель: {goal} ✓\n\nОпиши что сделал — цвета, шрифты, композицию, ключевые решения."
-        )
+        USER_MODE[user_id] = "design_wait_photo"
+        DESIGN_IMAGE[user_id] = ""
+        DESIGN_ANSWERS[user_id] = {}
+        DESIGN_QUESTIONS[user_id] = []
+        DESIGN_STEP[user_id] = 0
+        await query.edit_message_text("Прикрепи скрин дизайна 🖼")
 
     elif data == "back_main":
         USER_MODE[user_id] = ""
         CONVERSATIONS[user_id] = []
-        await query.edit_message_text(
-            "Что делаем?",
-            reply_markup=get_main_keyboard()
-        )
+        await query.edit_message_text("Что делаем?", reply_markup=get_main_keyboard())
+
+    elif data.startswith("dq_"):
+        # Ответ на вопрос по дизайну
+        answer = data[3:]
+        step = DESIGN_STEP.get(user_id, 0)
+        questions = DESIGN_QUESTIONS.get(user_id, [])
+        answers = DESIGN_ANSWERS.get(user_id, {})
+
+        if step < len(questions):
+            answers[questions[step]["question"]] = answer
+            DESIGN_ANSWERS[user_id] = answers
+            DESIGN_STEP[user_id] = step + 1
+            await _ask_next_design_question(query, user_id, context)
+
+    elif data == "vol_short":
+        DESIGN_ANSWERS.setdefault(user_id, {})["volume"] = "коротко (3-5 строк)"
+        await query.edit_message_text("Генерирую аргументацию...")
+        await _generate_argumentation(user_id, context, query.message.chat_id)
+
+    elif data == "vol_long":
+        DESIGN_ANSWERS.setdefault(user_id, {})["volume"] = "развёрнуто"
+        await query.edit_message_text("Генерирую аргументацию...")
+        await _generate_argumentation(user_id, context, query.message.chat_id)
 
 
-async def handle_photo(update: Update, context) -> None:
-    user_id = update.effective_user.id
+async def _ask_next_design_question(query_or_message, user_id: int, context):
+    step = DESIGN_STEP.get(user_id, 0)
+    questions = DESIGN_QUESTIONS.get(user_id, [])
 
-    if not is_owner(user_id):
+    if step >= len(questions):
+        # Все вопросы заданы — спрашиваем объём
+        if hasattr(query_or_message, 'edit_message_text'):
+            await query_or_message.edit_message_text(
+                "Какой объём аргументации?",
+                reply_markup=get_volume_keyboard()
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="Какой объём аргументации?",
+                reply_markup=get_volume_keyboard()
+            )
         return
 
-    mode = USER_MODE.get(user_id, "")
-    if not mode:
-        await update.message.reply_text(
-            "Выбери что делаем 👇",
-            reply_markup=get_main_keyboard()
-        )
-        return
+    q = questions[step]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(opt, callback_data=f"dq_{opt}") for opt in row]
+        for row in q["options"]
+    ])
 
-    if user_id not in CONVERSATIONS:
-        CONVERSATIONS[user_id] = []
+    text = q["question"]
+    if hasattr(query_or_message, 'edit_message_text'):
+        await query_or_message.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard)
 
-    # Скачиваем фото и конвертируем в base64
-    import base64
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    file_bytes = await file.download_as_bytearray()
-    image_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
 
-    caption = update.message.caption or "Скрин переписки с клиентом"
+async def _generate_argumentation(user_id: int, context, chat_id: int):
+    image_data = DESIGN_IMAGE.get(user_id, "")
+    answers = DESIGN_ANSWERS.get(user_id, {})
+    volume = answers.get("volume", "коротко")
 
-    # Формируем сообщение с картинкой
-    user_content = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": image_data
+    answers_text = "\n".join([f"— {k}: {v}" for k, v in answers.items() if k != "volume"])
+
+    system = f"""Ты пишешь аргументацию к дизайну от лица дизайнера Артёма для клиента.
+
+Объём: {volume}.
+
+Контекст из ответов дизайнера:
+{answers_text}
+
+""" + ARTEM_STYLE
+
+    messages = [{
+        "role": "user",
+        "content": [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
+            },
+            {
+                "type": "text",
+                "text": f"Напиши аргументацию к этому дизайну. Объём: {volume}. Дополнительный контекст:\n{answers_text}"
             }
-        },
-        {
-            "type": "text",
-            "text": caption
-        }
-    ]
-
-    CONVERSATIONS[user_id].append({"role": "user", "content": user_content})
-    history = CONVERSATIONS[user_id][-10:]
-    system = BRIEF_SYSTEM if mode == "brief" else DESIGN_SYSTEM
+        ]
+    }]
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -279,20 +219,117 @@ async def handle_photo(update: Update, context) -> None:
             model="claude-sonnet-4-5",
             max_tokens=1000,
             system=system,
+            messages=messages
+        )
+        response = clean_text(message.content[0].text)
+        await context.bot.send_message(chat_id=chat_id, text=response, reply_markup=get_back_keyboard())
+    except Exception as e:
+        logger.error(f"Error generating argumentation: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.")
+
+
+async def handle_photo(update: Update, context) -> None:
+    user_id = update.effective_user.id
+    if not is_owner(user_id):
+        return
+
+    mode = USER_MODE.get(user_id, "")
+
+    # Режим аргументации — ждём фото дизайна
+    if mode == "design_wait_photo":
+        thinking_msg = await update.message.reply_text("Анализирую...")
+
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        file_bytes = await file.download_as_bytearray()
+        image_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
+        DESIGN_IMAGE[user_id] = image_data
+
+        # Анализируем дизайн и генерируем вопросы
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            message = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=500,
+                system="""Ты анализируешь дизайн и генерируешь 2-3 уточняющих вопроса для дизайнера.
+
+Верни ТОЛЬКО JSON такого формата (без markdown, без пояснений):
+[
+  {
+    "question": "Вопрос?",
+    "options": [["Вариант 1", "Вариант 2"], ["Вариант 3"]]
+  }
+]
+
+Вопросы должны быть конкретными под этот дизайн. Варианты — короткие, 1-3 слова. Максимум 2 варианта в ряду.""",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
+                        },
+                        {"type": "text", "text": "Сгенерируй уточняющие вопросы для аргументации этого дизайна."}
+                    ]
+                }]
+            )
+
+            import json
+            raw = message.content[0].text.strip()
+            raw = re.sub(r'```json|```', '', raw).strip()
+            questions = json.loads(raw)
+            DESIGN_QUESTIONS[user_id] = questions
+            DESIGN_STEP[user_id] = 0
+            USER_MODE[user_id] = "design_questions"
+
+        except Exception as e:
+            logger.error(f"Error analyzing design: {e}")
+            DESIGN_QUESTIONS[user_id] = []
+            DESIGN_STEP[user_id] = 0
+            USER_MODE[user_id] = "design_questions"
+
+        # Удаляем "Анализирую..."
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+
+        await _ask_next_design_question(update.message, user_id, context)
+        return
+
+    # Обычный режим — фото как контекст
+    if not mode:
+        await update.message.reply_text("Выбери что делаем 👇", reply_markup=get_main_keyboard())
+        return
+
+    if user_id not in CONVERSATIONS:
+        CONVERSATIONS[user_id] = []
+
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    file_bytes = await file.download_as_bytearray()
+    image_data = base64.standard_b64encode(bytes(file_bytes)).decode("utf-8")
+    caption = update.message.caption or "Скрин переписки"
+
+    user_content = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
+        {"type": "text", "text": caption}
+    ]
+
+    CONVERSATIONS[user_id].append({"role": "user", "content": user_content})
+    history = CONVERSATIONS[user_id][-10:]
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1000,
+            system=BRIEF_SYSTEM,
             messages=history
         )
-        response = message.content[0].text
-        # Убираем markdown звёздочки
-        response = response.replace("**", "").replace("__", "")
-        import re
-        response = re.sub(r"(?<=\w)-(?=\w)", "2014", response)
+        response = clean_text(message.content[0].text)
         CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
-
-        back_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("← Главное меню", callback_data="back_main")]
-        ])
-        await update.message.reply_text(response, reply_markup=back_keyboard)
-
+        await update.message.reply_text(response, reply_markup=get_back_keyboard())
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text("Что-то пошло не так, попробуй снова.")
@@ -300,7 +337,6 @@ async def handle_photo(update: Update, context) -> None:
 
 async def handle_message(update: Update, context) -> None:
     user_id = update.effective_user.id
-
     if not is_owner(user_id):
         return
 
@@ -310,11 +346,12 @@ async def handle_message(update: Update, context) -> None:
 
     mode = USER_MODE.get(user_id, "")
 
-    if not mode:
-        await update.message.reply_text(
-            "Выбери что делаем 👇",
-            reply_markup=get_main_keyboard()
-        )
+    if not mode or mode == "design_wait_photo":
+        await update.message.reply_text("Выбери что делаем 👇", reply_markup=get_main_keyboard())
+        return
+
+    if mode == "design_questions":
+        await update.message.reply_text("Используй кнопки для ответа 👆")
         return
 
     if user_id not in CONVERSATIONS:
@@ -323,29 +360,17 @@ async def handle_message(update: Update, context) -> None:
     CONVERSATIONS[user_id].append({"role": "user", "content": user_text})
     history = CONVERSATIONS[user_id][-20:]
 
-    system = BRIEF_SYSTEM if mode == "brief" else DESIGN_SYSTEM
-
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1000,
-            system=system,
+            system=BRIEF_SYSTEM,
             messages=history
         )
-        response = message.content[0].text
-        # Убираем markdown звёздочки
-        response = response.replace("**", "").replace("__", "")
-        import re
-        response = re.sub(r"(?<=\w)-(?=\w)", "2014", response)
+        response = clean_text(message.content[0].text)
         CONVERSATIONS[user_id].append({"role": "assistant", "content": response})
-
-        back_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("← Главное меню", callback_data="back_main")]
-        ])
-
-        await update.message.reply_text(response, reply_markup=back_keyboard)
-
+        await update.message.reply_text(response, reply_markup=get_back_keyboard())
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text("Что-то пошло не так, попробуй снова.")
