@@ -28,47 +28,19 @@ BRIEF_ANSWERS: dict[int, dict] = {}
 BRIEF_STEP: dict[int, int] = {}
 BRIEF_VARIANTS: dict[int, list] = {}
 
-TONES = {
-    "my": """Пиши от лица дизайнера — живо, коротко, без воды и пафоса.
-— Простой разговорный язык, короткие предложения
-— Слова: "смотри", "по сути", "короче", "честно"
-— Никаких клише: "уникальный подход", "новый уровень"
-— Никаких эмодзи в тексте, дефис только как дефис
-— Без звёздочек и форматирования
-Главное: живо, по-человечески, без пафоса.""",
-
-    "pro": """Пиши чётко, структурированно и по делу. Деловой тон.
-— Конкретные формулировки без воды
-— Уважительно, без лишней теплоты
-— Факты и условия на первом месте
-— Без разговорных слов и сленга
-— Без эмодзи, звёздочек и форматирования
-Главное: чётко, профессионально, по существу.""",
-
-    "friendly": """Пиши тепло и располагающе, как к хорошему знакомому.
-— Мягкий и дружелюбный тон
-— Простой язык, без сухости
-— Чуть больше эмпатии и заботы
-— Без формализма, но уважительно
-— Без звёздочек и форматирования
-Главное: тепло, по-человечески, располагающе."""
-}
-
 THINKING = [
-    "✦ Анализирую...",
-    "✦ Смотрю на детали...",
-    "✦ Собираю мысли...",
-    "✦ Готовлю варианты...",
-    "✦ Вникаю в дизайн...",
-    "✦ Думаю как подать...",
+    "⏳ Анализирую контекст...",
+    "⏳ Собираю сильные аргументы...",
+    "⏳ Формулирую варианты...",
+    "⏳ Подбираю тон ответа...",
+    "⏳ Навожу порядок в мыслях...",
 ]
 
 WELCOME = (
-    "✦ Привет!\n\n"
-    "Я помогаю работать с клиентами быстрее.\n\n"
-    "💬  Составлю ответ на любую ситуацию\n"
-    "🎨  Аргументирую дизайн так, чтобы клиент понял\n\n"
-    "Что делаем?"
+    "Главное меню\n\n"
+    "Выбери, что нужно подготовить сейчас.\n\n"
+    "💬 Ответ клиенту - быстро собрать сообщение по ситуации.\n"
+    "🎨 Аргументация дизайна - объяснить решение по скрину."
 )
 
 TONES = {
@@ -108,20 +80,20 @@ TONES = {
 USER_TONE: dict[int, str] = {}  # user_id -> tone key
 
 BRIEF_QS = [
-    {"key": "situation", "q": "Что за ситуация?",
-     "opts": [["🆕 Новый проект", "✏️ Правки"], ["💰 Цена", "⏰ Сроки"], ["📋 Другое"]]},
-    {"key": "type", "q": "Тип проекта?",
-     "opts": [["🎯 Креатив", "📊 Презентация"], ["✏️ Логотип", "💎 Брендинг"], ["📁 Другое"]]},
-    {"key": "price", "q": "Сколько стоит?",
+    {"key": "situation", "q": "С чем нужно помочь?",
+     "opts": [["Новый проект", "Правки"], ["Цена", "Сроки"], ["Другое"]]},
+    {"key": "type", "q": "Какой тип проекта?",
+     "opts": [["Креатив", "Презентация"], ["Логотип", "Брендинг"], ["Другое"]]},
+    {"key": "price", "q": "Какой бюджет или стоимость?",
      "opts": [["До $100", "$100–300"], ["$300–500", "$500+"]]},
-    {"key": "deadline", "q": "Сроки?",
+    {"key": "deadline", "q": "Какие сроки?",
      "opts": [["1–2 дня", "3–5 дней"], ["1–2 недели", "Дольше"]]},
-    {"key": "revisions", "q": "Правки включены?",
+    {"key": "revisions", "q": "Сколько правок включено?",
      "opts": [["1 правка", "2 правки"], ["3 правки", "Без лимита"]]},
-    {"key": "prepay", "q": "Предоплата?",
+    {"key": "prepay", "q": "Какая предоплата?",
      "opts": [["50%", "100%"], ["Без предоплаты"]]},
-    {"key": "goal", "q": "Что нужно сказать клиенту?",
-     "opts": [["📋 Обозначить условия", "🤝 Закрыть сделку"], ["🔔 Напомнить о себе", "🚫 Отказать вежливо"]]},
+    {"key": "goal", "q": "Какой нужен результат ответа?",
+     "opts": [["Обозначить условия", "Закрыть сделку"], ["Напомнить о себе", "Отказать вежливо"]]},
 ]
 
 ADMIN_USERS_PER_PAGE = 8
@@ -165,52 +137,63 @@ def clean(text: str) -> str:
     return text.replace("**", "").replace("__", "").replace("*", "")
 
 
+def variants_text(title: str, variants: list) -> str:
+    text = f"{title}\n\n"
+    for i, variant in enumerate(variants, 1):
+        text += f"{i}. {variant}\n\n"
+    return text + "Выбери вариант ниже или обнови подборку."
+
+
+def picked_variant_text(index: int, variant: str) -> str:
+    return f"Вариант {index}\n\n{variant}"
+
+
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def kb_main():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬  Ответить клиенту", callback_data="mode_brief")],
-        [InlineKeyboardButton("🎨  Аргументация клиенту", callback_data="mode_design")],
+        [InlineKeyboardButton("💬 Ответ клиенту", callback_data="mode_brief")],
+        [InlineKeyboardButton("🎨 Аргументация дизайна", callback_data="mode_design")],
     ])
 
 
 def kb_back_main():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠  Главное меню", callback_data="back_main")]
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")]
     ])
 
 
 def kb_after_pick():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("↩️  К вариантам", callback_data="back_variants")],
-        [InlineKeyboardButton("🏠  Главное меню", callback_data="back_main")],
+        [InlineKeyboardButton("← К вариантам", callback_data="back_variants")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
 def kb_after_brief_pick():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("↩️  К вариантам", callback_data="back_brief_variants")],
-        [InlineKeyboardButton("🏠  Главное меню", callback_data="back_main")],
+        [InlineKeyboardButton("← К вариантам", callback_data="back_brief_variants")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
 def kb_design_variants():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("1", callback_data="pick_0"),
-         InlineKeyboardButton("2", callback_data="pick_1"),
-         InlineKeyboardButton("3", callback_data="pick_2")],
-        [InlineKeyboardButton("🔄  Обновить варианты", callback_data="refresh_design")],
-        [InlineKeyboardButton("🏠  Главное меню", callback_data="back_main")],
+        [InlineKeyboardButton("Вариант 1", callback_data="pick_0"),
+         InlineKeyboardButton("Вариант 2", callback_data="pick_1"),
+         InlineKeyboardButton("Вариант 3", callback_data="pick_2")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="refresh_design")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
 def kb_brief_variants():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("1", callback_data="bpick_0"),
-         InlineKeyboardButton("2", callback_data="bpick_1"),
-         InlineKeyboardButton("3", callback_data="bpick_2")],
-        [InlineKeyboardButton("🔄  Обновить варианты", callback_data="refresh_brief")],
-        [InlineKeyboardButton("🏠  Главное меню", callback_data="back_main")],
+        [InlineKeyboardButton("Вариант 1", callback_data="bpick_0"),
+         InlineKeyboardButton("Вариант 2", callback_data="bpick_1"),
+         InlineKeyboardButton("Вариант 3", callback_data="bpick_2")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="refresh_brief")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
     ])
 
 
@@ -219,8 +202,8 @@ def kb_brief_q(opts):
     for row in opts:
         for option in row:
             rows.append([InlineKeyboardButton(option, callback_data=f"bq_{option}")])
-    rows.append([InlineKeyboardButton("✍️  Опишу сам", callback_data="bq_custom")])
-    rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="bq_skip_all")])
+    rows.append([InlineKeyboardButton("✍️ Написать свой вариант", callback_data="bq_custom")])
+    rows.append([InlineKeyboardButton("✨ Пропустить и собрать самому", callback_data="bq_skip_all")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -229,22 +212,22 @@ def kb_design_q(opts):
     for row in opts:
         for option in row:
             rows.append([InlineKeyboardButton(option, callback_data=f"dq_{option}")])
-    rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
+    rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
     return InlineKeyboardMarkup(rows)
 
 
 def kb_tone():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨  Мой стиль", callback_data="tone_my")],
-        [InlineKeyboardButton("💼  Профессионально", callback_data="tone_pro")],
-        [InlineKeyboardButton("🤝  Дружелюбно", callback_data="tone_friendly")],
+        [InlineKeyboardButton("🎨 Мой стиль", callback_data="tone_my")],
+        [InlineKeyboardButton("💼 Профессионально", callback_data="tone_pro")],
+        [InlineKeyboardButton("🤝 Дружелюбно", callback_data="tone_friendly")],
     ])
 
 
 def kb_volume():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝  Коротко (3–5 строк)", callback_data="vol_short")],
-        [InlineKeyboardButton("📄  Развёрнуто", callback_data="vol_long")],
+        [InlineKeyboardButton("📝 Коротко", callback_data="vol_short")],
+        [InlineKeyboardButton("📄 Развёрнуто", callback_data="vol_long")],
     ])
 
 
@@ -269,8 +252,7 @@ def admin_stats(data):
 def admin_home_text(data):
     stats = admin_stats(data)
     return (
-        "🔧  Админ-панель\n\n"
-        "Выбери раздел ниже.\n\n"
+        "🔧 Админ-панель\n\n"
         f"👥 Пользователи: {stats['users']}\n"
         f"✅ Активные: {stats['active_users']}\n"
         f"⛔ Отключены: {stats['blocked_users']}\n\n"
@@ -289,12 +271,12 @@ def admin_users_text(data, page=0):
     page = max(0, min(page, total_pages - 1))
 
     if not users:
-        return "👥  Пользователи\n\nПока никто не активировал ключ."
+        return "👥 Пользователи\n\nПока никто не активировал ключ."
 
     start = page * ADMIN_USERS_PER_PAGE
     visible_users = users[start:start + ADMIN_USERS_PER_PAGE]
     lines = [
-        "👥  Пользователи",
+        "👥 Пользователи",
         f"Страница {page + 1}/{total_pages}",
         "",
     ]
@@ -319,7 +301,7 @@ def admin_keys_text(data):
             keys_text += f"\n\nПоказаны последние 20 из {len(keys)} свободных ключей."
 
     return (
-        "🔑  Ключи доступа\n\n"
+        "🔑 Ключи доступа\n\n"
         f"Свободные: {stats['unused_keys']}\n"
         f"Использованные: {stats['used_keys']}\n\n"
         f"{keys_text}"
@@ -328,9 +310,9 @@ def admin_keys_text(data):
 
 def kb_admin_home():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥  Пользователи", callback_data="admin_users_0")],
-        [InlineKeyboardButton("🔑  Ключи доступа", callback_data="admin_keys")],
-        [InlineKeyboardButton("🔄  Обновить", callback_data="admin_home")],
+        [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users_0")],
+        [InlineKeyboardButton("🔑 Ключи доступа", callback_data="admin_keys")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data="admin_home")],
     ])
 
 
@@ -350,7 +332,7 @@ def kb_admin_users(data, page=0):
         icon = "✅" if info.get("active") else "❌"
         label = "Отключить" if info.get("active") else "Включить"
         rows.append([
-            InlineKeyboardButton(f"{icon}  {name}", callback_data="noop"),
+            InlineKeyboardButton(f"{icon} {name}", callback_data="noop"),
             InlineKeyboardButton(label, callback_data=f"admin_toggle_{page}_{uid}")
         ])
 
@@ -364,8 +346,8 @@ def kb_admin_users(data, page=0):
         rows.append(nav)
 
     rows.append([
-        InlineKeyboardButton("🔑  Ключи", callback_data="admin_keys"),
-        InlineKeyboardButton("←  Меню", callback_data="admin_home")
+        InlineKeyboardButton("🔑 Ключи", callback_data="admin_keys"),
+        InlineKeyboardButton("← Меню", callback_data="admin_home")
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -378,8 +360,8 @@ def kb_admin_keys():
             InlineKeyboardButton("➕  10", callback_data="admin_gen_keys_10"),
         ],
         [
-            InlineKeyboardButton("👥  Пользователи", callback_data="admin_users_0"),
-            InlineKeyboardButton("←  Меню", callback_data="admin_home"),
+            InlineKeyboardButton("👥 Пользователи", callback_data="admin_users_0"),
+            InlineKeyboardButton("← Меню", callback_data="admin_home"),
         ],
     ])
 
@@ -412,15 +394,18 @@ async def gen_design_variants(user_id, context, chat_id, refresh=False):
         variants = [clean(v) for v in json.loads(raw)]
         DESIGN_VARIANTS[user_id] = variants
 
-        text = "✦ Готово — 3 варианта:\n\n"
-        for i, v in enumerate(variants, 1):
-            text += f"{i}.\n{v}\n\n"
-        text += "Выбери вариант или обнови:"
-
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_design_variants())
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=variants_text("Готово. 3 варианта аргументации:", variants),
+            reply_markup=kb_design_variants()
+        )
     except Exception as e:
         logger.error(f"gen_design error: {e}")
-        await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.", reply_markup=kb_back_main())
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Не получилось собрать аргументацию. Попробуй обновить варианты или начать заново.",
+            reply_markup=kb_back_main()
+        )
 
 
 async def gen_brief_variants(user_id, context, chat_id, refresh=False):
@@ -444,15 +429,18 @@ async def gen_brief_variants(user_id, context, chat_id, refresh=False):
         variants = [clean(v) for v in json.loads(raw)]
         BRIEF_VARIANTS[user_id] = variants
 
-        text = "✦ Готово — 3 варианта:\n\n"
-        for i, v in enumerate(variants, 1):
-            text += f"{i}.\n{v}\n\n"
-        text += "Выбери вариант или обнови:"
-
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_brief_variants())
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=variants_text("Готово. 3 варианта ответа:", variants),
+            reply_markup=kb_brief_variants()
+        )
     except Exception as e:
         logger.error(f"gen_brief error: {e}")
-        await context.bot.send_message(chat_id=chat_id, text="Что-то пошло не так, попробуй снова.", reply_markup=kb_back_main())
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Не получилось собрать ответ. Попробуй обновить варианты или начать заново.",
+            reply_markup=kb_back_main()
+        )
 
 
 async def ask_design_q(target, user_id, context):
@@ -460,7 +448,7 @@ async def ask_design_q(target, user_id, context):
     qs = DESIGN_QUESTIONS.get(user_id, [])
 
     if step >= len(qs):
-        text = "📐  Какой объём аргументации?"
+        text = "Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту."
         kb = kb_volume()
         if hasattr(target, 'edit_message_text'):
             await target.edit_message_text(text, reply_markup=kb)
@@ -479,10 +467,10 @@ async def ask_design_q(target, user_id, context):
         for opt in row:
             rows.append([InlineKeyboardButton(opt, callback_data=f"dqi_{idx}")])
             idx += 1
-    rows.append([InlineKeyboardButton("🎯  Определи сам", callback_data="dq_auto")])
-    rows.append([InlineKeyboardButton("✅  Определи всё самостоятельно", callback_data="dq_skip_all")])
+    rows.append([InlineKeyboardButton("✨ Определи сам", callback_data="dq_auto")])
+    rows.append([InlineKeyboardButton("⏭ Пропустить вопросы", callback_data="dq_skip_all")])
     kb = InlineKeyboardMarkup(rows)
-    text = q["question"] + "\n\n(или напиши свой вариант)"
+    text = f"Вопрос {step + 1}/{len(qs)}\n\n{q['question']}\n\nМожно выбрать вариант или написать свой."
 
     if hasattr(target, 'edit_message_text'):
         await target.edit_message_text(text, reply_markup=kb)
@@ -495,7 +483,7 @@ async def ask_brief_q(target, user_id, context):
 
     if step >= len(BRIEF_QS):
         # Спрашиваем тон перед генерацией
-        text = "🎭  Выбери тон ответа:"
+        text = "Тон ответа\n\nВыбери, как должно звучать сообщение клиенту."
         if hasattr(target, 'edit_message_text'):
             await target.edit_message_text(text, reply_markup=kb_tone())
         else:
@@ -504,7 +492,7 @@ async def ask_brief_q(target, user_id, context):
         return
 
     q = BRIEF_QS[step]
-    text = q["q"]
+    text = f"Вопрос {step + 1}/{len(BRIEF_QS)}\n\n{q['q']}"
     kb = kb_brief_q(q["opts"])
 
     if hasattr(target, 'edit_message_text'):
@@ -519,10 +507,12 @@ async def start(update: Update, context) -> None:
     uid = update.effective_user.id
     if not is_allowed(uid):
         USER_MODE[uid] = "waiting_key"
-        await update.message.reply_text("Привет 👋\n\nВведите ключ доступа 🔑", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(
+            "Доступ по ключу\n\nОтправь ключ доступа, который выдал администратор.",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
     USER_MODE[uid] = ""
-    await update.message.reply_text("...", reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(WELCOME, reply_markup=kb_main())
 
 
@@ -596,10 +586,10 @@ async def handle_callback(update: Update, context) -> None:
         save_data(data)
         keys_text = "\n".join(f"`{key}`" for key in keys)
         await q.edit_message_text(
-            f"✅  Создано ключей: {count}\n\n{keys_text}\n\nОтправь пользователям.",
+            f"Ключи созданы\n\n{keys_text}\n\nОтправь их пользователям для входа.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔑  Все ключи", callback_data="admin_keys")],
-                [InlineKeyboardButton("←  Меню", callback_data="admin_home")]
+                [InlineKeyboardButton("🔑 Все ключи", callback_data="admin_keys")],
+                [InlineKeyboardButton("← Меню", callback_data="admin_home")]
             ]),
             parse_mode="Markdown"
         )
@@ -620,7 +610,7 @@ async def handle_callback(update: Update, context) -> None:
         return
 
     if not is_allowed(uid):
-        await q.edit_message_text("Нет доступа.")
+        await q.edit_message_text("Нет доступа. Отправь ключ доступа через /start.")
         return
 
     # Main navigation
@@ -640,19 +630,22 @@ async def handle_callback(update: Update, context) -> None:
         DESIGN_ANSWERS[uid] = {}
         DESIGN_QUESTIONS[uid] = []
         DESIGN_STEP[uid] = 0
-        await q.edit_message_text("🖼  Прикрепи скрин дизайна")
+        await q.edit_message_text(
+            "Аргументация дизайна\n\nПрикрепи скрин дизайна. Я задам пару вопросов и соберу варианты объяснения для клиента.",
+            reply_markup=kb_back_main()
+        )
 
     # Brief questions
     elif d.startswith("bq_"):
         answer = d[3:]
         if answer == "skip_all":
-            await q.edit_message_text("🎭  Выбери тон ответа:", reply_markup=kb_tone())
+            await q.edit_message_text("Тон ответа\n\nВыбери, как должно звучать сообщение клиенту.", reply_markup=kb_tone())
             USER_MODE[uid] = "brief_tone"
         elif answer == "custom":
             USER_MODE[uid] = "brief_custom"
             step = BRIEF_STEP.get(uid, 0)
             hint = BRIEF_QS[step]["q"] if step < len(BRIEF_QS) else "Опиши:"
-            await q.edit_message_text(f"{hint}\n\n✍️  Напиши свой вариант:")
+            await q.edit_message_text(f"{hint}\n\nНапиши свой вариант одним сообщением.")
         else:
             step = BRIEF_STEP.get(uid, 0)
             ans = BRIEF_ANSWERS.get(uid, {})
@@ -667,16 +660,15 @@ async def handle_callback(update: Update, context) -> None:
         idx = int(d[6:])
         variants = BRIEF_VARIANTS.get(uid, [])
         if idx < len(variants):
-            await q.edit_message_text(f"✦ Вариант {idx+1}:\n\n{variants[idx]}", reply_markup=kb_after_brief_pick())
+            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_brief_pick())
 
     elif d == "back_brief_variants":
         variants = BRIEF_VARIANTS.get(uid, [])
         if variants:
-            text = "✦ Готово — 3 варианта:\n\n"
-            for i, v in enumerate(variants, 1):
-                text += f"{i}.\n{v}\n\n"
-            text += "Выбери вариант или обнови:"
-            await q.edit_message_text(text, reply_markup=kb_brief_variants())
+            await q.edit_message_text(
+                variants_text("Готово. 3 варианта ответа:", variants),
+                reply_markup=kb_brief_variants()
+            )
 
     elif d == "refresh_brief":
         await q.edit_message_text(random.choice(THINKING))
@@ -700,7 +692,10 @@ async def handle_callback(update: Update, context) -> None:
     elif d.startswith("dq_"):
         answer = d[3:]
         if answer == "skip_all":
-            await q.edit_message_text("📐  Какой объём аргументации?", reply_markup=kb_volume())
+            await q.edit_message_text(
+                "Формат аргументации\n\nВыбери, насколько подробно объяснить дизайн клиенту.",
+                reply_markup=kb_volume()
+            )
         else:
             step = DESIGN_STEP.get(uid, 0)
             qs = DESIGN_QUESTIONS.get(uid, [])
@@ -713,12 +708,12 @@ async def handle_callback(update: Update, context) -> None:
 
     elif d == "vol_short":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "коротко (3–5 строк)"
-        await q.edit_message_text("🎭  Выбери тон аргументации:", reply_markup=kb_tone())
+        await q.edit_message_text("Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
         USER_MODE[uid] = "design_tone"
 
     elif d == "vol_long":
         DESIGN_ANSWERS.setdefault(uid, {})["volume"] = "развёрнуто"
-        await q.edit_message_text("🎭  Выбери тон аргументации:", reply_markup=kb_tone())
+        await q.edit_message_text("Тон аргументации\n\nВыбери, как должно звучать объяснение.", reply_markup=kb_tone())
         USER_MODE[uid] = "design_tone"
 
     elif d.startswith("tone_"):
@@ -736,16 +731,15 @@ async def handle_callback(update: Update, context) -> None:
         idx = int(d[5:])
         variants = DESIGN_VARIANTS.get(uid, [])
         if idx < len(variants):
-            await q.edit_message_text(f"✦ Вариант {idx+1}:\n\n{variants[idx]}", reply_markup=kb_after_pick())
+            await q.edit_message_text(picked_variant_text(idx + 1, variants[idx]), reply_markup=kb_after_pick())
 
     elif d == "back_variants":
         variants = DESIGN_VARIANTS.get(uid, [])
         if variants:
-            text = "✦ Готово — 3 варианта:\n\n"
-            for i, v in enumerate(variants, 1):
-                text += f"{i}.\n{v}\n\n"
-            text += "Выбери вариант или обнови:"
-            await q.edit_message_text(text, reply_markup=kb_design_variants())
+            await q.edit_message_text(
+                variants_text("Готово. 3 варианта аргументации:", variants),
+                reply_markup=kb_design_variants()
+            )
 
     elif d == "refresh_design":
         await q.edit_message_text(random.choice(THINKING))
@@ -760,7 +754,7 @@ async def handle_photo(update: Update, context) -> None:
     mode = USER_MODE.get(uid, "")
 
     if mode != "design_wait_photo":
-        await update.message.reply_text("Выбери режим сначала 👇", reply_markup=kb_main())
+        await update.message.reply_text("Сначала выбери режим в главном меню.", reply_markup=kb_main())
         return
 
     thinking_msg = await update.message.reply_text(random.choice(THINKING))
@@ -821,17 +815,24 @@ async def handle_message(update: Update, context) -> None:
             data["users"][str(uid)] = {"active": True, "name": name, "key": key}
             save_data(data)
             USER_MODE[uid] = ""
-            await update.message.reply_text(f"✅  Доступ открыт!\n\n{WELCOME}", reply_markup=kb_main())
+            await update.message.reply_text(f"Доступ открыт\n\n{WELCOME}", reply_markup=kb_main())
         else:
-            await update.message.reply_text("❌  Неверный ключ. Попробуй снова или обратись к администратору.")
+            await update.message.reply_text("Ключ не подошёл. Проверь написание или попроси новый ключ у администратора.")
         return
 
     if not is_allowed(uid):
         USER_MODE[uid] = "waiting_key"
-        await update.message.reply_text("Введите ключ доступа 🔑")
+        await update.message.reply_text("Отправь ключ доступа, чтобы продолжить.")
         return
 
-    if not mode or mode == "design_wait_photo":
+    if mode == "design_wait_photo":
+        await update.message.reply_text(
+            "Пришли скрин дизайна изображением. После этого я задам уточняющие вопросы.",
+            reply_markup=kb_back_main()
+        )
+        return
+
+    if not mode:
         await update.message.reply_text(WELCOME, reply_markup=kb_main())
         return
 
@@ -847,7 +848,7 @@ async def handle_message(update: Update, context) -> None:
         return
 
     if mode == "brief_q":
-        await update.message.reply_text("Используй кнопки или нажми ✍️ Опишу сам")
+        await update.message.reply_text("Выбери вариант кнопкой или нажми «Написать свой вариант».")
         return
 
     if mode == "brief_custom":
